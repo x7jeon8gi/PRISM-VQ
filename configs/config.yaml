@@ -1,0 +1,100 @@
+data:
+  universe: 'csi300'
+  data_path: 'dataset/data'
+  window_size: 20
+  step: 1
+  train_period : ["2009-01-01", "2019-12-31"] # 10년 
+  valid_period : ["2020-01-01", "2021-12-31"] # 2년
+  test_period  : ["2022-01-01", "2024-12-31"] # 3년
+
+vqvae:
+  num_features: 158
+  seq_len: 20 
+  hidden_size: 128     # hidden dimension (내부)
+  num_prior_factors: 13  # -> vq_embed_dim 과 합 45 / 77
+  vq_embed_dim: 128    #* element 수로 해석가능함.
+  num_embed: 256       #! 코드북 갯수
+  # encoder 파라미터
+  encoder:
+    num_heads: 2 # !
+    num_layers: 1
+  # quantizer 파라미터
+  quantizer:
+    decay: 0.95
+    commit_weight: 0.25
+    distance: 'l2' # 결과상 l2가 제일 좋은것 같음
+    anchor: 'probrandom'
+    first_batch: False
+    contras_loss: True
+  # Decoder 파라미터
+  decoder:
+    norm_type: 'none'     # 'batch', 'group', 'layer', 'instance', 'none'
+    num_groups: 8         # GroupNorm 사용시 그룹 수
+    hidden_channels: 128
+    initial_T: 5
+    ortho_loss_weight: 0.1
+  # Predictor 파라미터
+  predictor:
+    pred_len: 10
+    num_gru_layers: 1
+    dropout: 0.1 # 걍 건드리지마 
+    output_dim: 1
+    pred_weight: 0.0001
+
+predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_heads(n), dropout(d)
+  saved_model: "csi300v_h128_VQK256_C128_emb128_dl2-epoch=15-val_loss=0.5598.ckpt"
+  num_features: 158
+  individual: False
+  aux_weight: 0.01  # * 0.01 혹은 0.05 만 쓸 것 
+  kernel_size: 3
+  k: 1  # 최대 전문가 사용
+  n_expert: 4 # !        
+  pred_len: 20
+  moe_hidden: 64 # gate and noise  
+  dropout: 0.1
+
+  transformer:
+    arch_type: 'naive' # naive, rwkv, patch_tst, tssmixer, temporal_conv, hybrid
+    pe_kind: 'rope' # sin, learnable, relative, rope, time2vec, tape, tupe, conv_spe, temporal_pe, adaptive, fourier
+    num_heads: 4
+    num_layers: 1
+    d_model: 64  
+    dim_feedforward: 128
+    dropout: 0.5
+    batch_first: True
+
+  rank : 0
+  target_day: 5
+  use_prior: True
+
+train:
+  seed: 1 # ! SEED EXPERIMENTS
+  device: "cuda"
+  batch_size: 300 #(대략?)
+  learning_rate: 0.0001 #?
+  num_epochs: 70
+  project_name: "Fucked"
+  run_name: "auto"
+  gpu_counts: 1
+  precision: 32 
+  num_workers: 4
+  gradient_clip_val: 1
+  save_dir: "checkpoints"
+  save_res: "res"
+  early_stopping:
+    monitor: "val_loss"
+    min_delta: 0.00001
+    patience: 20
+    verbose: True
+    mode: "min"
+
+
+# temporal: # DLinear
+#   enc_in: 1
+#   kernel_size: 5 #! 홀수로 지정해야 동작함
+#   seq_len: 40 #고정 (데이터로부터 정해짐)
+#   pred_len: 32 # !미래 예측
+#   individual: False
+#   target_day: 5
+#   pred_hidden_size: 32
+#   saved_model: 'pretrain_csi300_h128_d64_K256_decay0.99_C512_pred32-epoch=17-val_loss=1.4824.ckpt'
