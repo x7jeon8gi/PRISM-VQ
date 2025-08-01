@@ -1,5 +1,5 @@
 data:
-  universe: 'csi300'
+  universe: 'sp500'
   data_path: 'dataset/data'
   window_size: 20
   step: 1
@@ -12,11 +12,11 @@ vqvae:
   seq_len: 20 
   hidden_size: 128     # hidden dimension (내부)
   num_prior_factors: 13  # -> vq_embed_dim 과 합 45 / 77
-  vq_embed_dim: 128    #* element 수로 해석가능함.
-  num_embed: 256       #! 코드북 갯수
+  vq_embed_dim: 128    # element 수로 해석가능함.
+  num_embed: 512       #! 코드북 갯수
   # encoder 파라미터
   encoder:
-    num_heads: 2 # !
+    num_heads: 2 
     num_layers: 1
   # quantizer 파라미터
   quantizer:
@@ -35,45 +35,48 @@ vqvae:
     ortho_loss_weight: 0.1
   # Predictor 파라미터
   predictor:
-    pred_len: 10
+    pred_len: 10 
     num_gru_layers: 1
     dropout: 0.1 # 걍 건드리지마 
     output_dim: 1
     pred_weight: 0.0001
 
+# aaaisp500_h128_VQK256_C128_emb128_dl2p10_s42-epoch=8-val_loss=0.6506.ckpt
+# aaaisp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=15-val_loss=0.6465.ckpt
+# aaaisp500_h128_VQK1024_C128_emb128_dl2p10_s42-epoch=25-val_loss=0.6501.ckpt
 predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_heads(n), dropout(d)
-  saved_model: "csi300v_h128_VQK256_C128_emb128_dl2-epoch=15-val_loss=0.5598.ckpt"
+  saved_model: "aaaisp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=15-val_loss=0.6465.ckpt"
   num_features: 158
   individual: False
-  aux_weight: 0.01  # * 0.01 혹은 0.05 만 쓸 것 
+  aux_weight: 0.01  # ! 0.01 혹은 0.05 만 쓸 것  미국시장에서 0.1 실험 해봄 0.005 , 0.0001 , 0.001
   kernel_size: 3
-  k: 1  # 최대 전문가 사용
-  n_expert: 4 # !        
-  pred_len: 20
+  k: 4  # top-k  전문가 
+  n_expert: 8 # !   # number of expert
+  pred_len: 20  # for DLinear
   moe_hidden: 64 # gate and noise  
   dropout: 0.1
 
   transformer:
     arch_type: 'naive' # naive, rwkv, patch_tst, tssmixer, temporal_conv, hybrid
     pe_kind: 'rope' # sin, learnable, relative, rope, time2vec, tape, tupe, conv_spe, temporal_pe, adaptive, fourier
-    num_heads: 4
+    num_heads: 2
     num_layers: 1
-    d_model: 64  
-    dim_feedforward: 128
-    dropout: 0.5
+    d_model: 32   # ! 
+    dim_feedforward: 64
+    dropout: 0.5 #?
     batch_first: True
-
+ 
   rank : 0
   target_day: 5
   use_prior: True
 
 train:
-  seed: 1 # ! SEED EXPERIMENTS
+  seed: 0 # ! SEED EXPERIMENTS
   device: "cuda"
   batch_size: 300 #(대략?)
   learning_rate: 0.0001 #?
-  num_epochs: 70
-  project_name: "Fucked"
+  num_epochs: 30
+  project_name: "AAAI"
   run_name: "auto"
   gpu_counts: 1
   precision: 32 
@@ -84,7 +87,7 @@ train:
   early_stopping:
     monitor: "val_loss"
     min_delta: 0.00001
-    patience: 20
+    patience: 15
     verbose: True
     mode: "min"
 

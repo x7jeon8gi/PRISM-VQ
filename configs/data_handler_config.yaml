@@ -1,5 +1,5 @@
 # start_time: "2008-01-01"
-# end_time: "2023-12-31"
+# end_time: "2024-12-31"
 # fit_start_time: "2008-01-01"
 # fit_end_time: "2019-12-31"
 # instruments: "csi300"
@@ -17,4 +17,4 @@
 #     kwargs:
 #       fields_group: label
 # label:
-#   - "Ref($close, -2)/Ref($close, -1) - 1"
+#   - "Ref($close, -5)/Ref($close, -1) - 1"

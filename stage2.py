@@ -67,11 +67,12 @@ def generate_run_name(config):
     moe_hidden = config['predictor']['moe_hidden']
     rank = config['predictor']['rank']
     moe_drop = config['predictor']['dropout']
+    horizon = config['predictor']['pred_len']
     
     run_name = (
-        f'{seed}_VQ{num_embed}_r{rank}_{config["data"]["universe"]}_mo{n_expert}_k{k}_mh{moe_hidden}_md{moe_drop}'
+        f'{seed}_VQ{num_embed}_{config["data"]["universe"]}_mo{n_expert}_k{k}_mh{moe_hidden}_md{moe_drop}_'
         f'dm{dim}_nh{n_heads}_l{n_layer}_d{dropout}_'
-        f'au{aux_weight}_1h{enc_heads}_1e{vq_embed_dim}_1d{dropout_pred}_1{distance}'
+        f'au{aux_weight}_1h{enc_heads}_1e{vq_embed_dim}_1d{dropout_pred}_1{distance}_p{horizon}'
     )
 
     return run_name
@@ -91,7 +92,7 @@ def train(config, train_loader,
     if wandb_run:
         wandb_logger = WandbLogger(experiment=wandb_run)
     else:
-        project_name = config['train']['project_name']+'_stage2'
+        project_name = config['train']['project_name']+'_'+config['data']['universe']+'_stage2'
         group_name = config['data']['universe']
         wandb_logger = WandbLogger(project=project_name, name=run_name, config=config, group=group_name, entity="x7jeon8gi")
     wandb_logger.watch(model, log='all')
@@ -128,7 +129,7 @@ def train(config, train_loader,
                          enable_checkpointing=True,
                          callbacks=[LearningRateMonitor(logging_interval='step'), 
                                    checkpoint_callback, 
-                                   checkpoint_callback_for_ric,
+                                   # checkpoint_callback_for_ric,
                                    early_stop_callback],
                          max_epochs=config['train']['num_epochs'],
                          
@@ -163,29 +164,37 @@ def train(config, train_loader,
 
     output_path = os.path.join(get_root_dir(), config['train']['save_res'], f"{run_name}_best.pkl")
     pred_df.to_pickle(output_path)
+    
+    # Also save as CSV for easy viewing
+    output_csv_path = os.path.join(get_root_dir(), config['train']['save_res'], f"{run_name}_metric.csv")
+    # metric은 딕셔너리이므로 DataFrame으로 변환 후 저장
+    pd.DataFrame([metric], index=['values']).transpose().to_csv(output_csv_path)
+    print(f"Results saved to {output_path} and {output_csv_path}")
 
     log_metrics_as_bar_chart(metric, model_name=run_name)
     wandb.log({'metrics_best': metric})
     
     # for RIC
-    best_checkpoint_path_for_ric = checkpoint_callback_for_ric.best_model_path
-    print(f"************ Best checkpoint path for RIC: {best_checkpoint_path_for_ric} ************")
-    print(f"************ Best validation RIC: {checkpoint_callback_for_ric.best_model_score} ************")
+    # best_checkpoint_path_for_ric = checkpoint_callback_for_ric.best_model_path
+    # print(f"************ Best checkpoint path for RIC: {best_checkpoint_path_for_ric} ************")
+    # print(f"************ Best validation RIC: {checkpoint_callback_for_ric.best_model_score} ************")
     
-    best_model_for_ric = GenerateReturn.load_from_checkpoint(best_checkpoint_path_for_ric, config=config, T_max=T_max)
-    with torch.no_grad():
-        print(f"************ Test 데이터 평가 시작 ************")
-        # validation 데이터로 평가
-        test_pred_df, _, test_metric = run_inference(best_model_for_ric, test_loader, config)
-        print(f"Test RIC for V-RIC: {test_metric['RankIC']:.4f}")
+    # best_model_for_ric = GenerateReturn.load_from_checkpoint(best_checkpoint_path_for_ric, config=config, T_max=T_max)
+    # with torch.no_grad():
+    #     print(f"************ Test 데이터 평가 시작 ************")
+    #     # validation 데이터로 평가
+    #     test_pred_df, _, test_metric = run_inference(best_model_for_ric, test_loader, config)
+    #     print(f"Test RIC for V-RIC: {test_metric['RankIC']:.4f}")
     
-    output_path = os.path.join(get_root_dir(), config['train']['save_res'], f"{run_name}_best_ric.pkl")
-    test_pred_df.to_pickle(output_path)
+    # output_path = os.path.join(get_root_dir(), config['train']['save_res'], f"{run_name}_best_ric.pkl")
+    # test_pred_df.to_pickle(output_path)
 
-    log_metrics_as_bar_chart(test_metric, model_name=run_name)
-    wandb.log({'metrics_best_ric': test_metric})
+    # log_metrics_as_bar_chart(test_metric, model_name=run_name)
+    # wandb.log({'metrics_best_ric': test_metric})
 
     wandb.finish()
+
+    return metric
 
 
 def main(config, wandb_run=None):
@@ -199,14 +208,17 @@ def main(config, wandb_run=None):
     elif config['data']['universe'] == 'sp500':
         region_code = 'US'
         universe_prefix = 'sp500'
+    elif config['data']['universe'] == 'csi500':
+        region_code = 'CN'
+        universe_prefix = 'csi500'
     else:
         raise ValueError(f"Invalid universe: {config['data']['universe']}")
     region = get_region(region_code)
     
     # * Load dataset
     print(f"Seed value: {config['train']['seed']}")
-    print(f"Region: {region_code}")
-    print(f"Universe: {config['data']['universe']}")
+    print(f"********** Region: {region_code} **********")
+    print(f"********** Universe: {config['data']['universe']} **********")
     
     ###### Load dataset ######
     pickle_path = config['data'].get('data_path')
@@ -214,9 +226,9 @@ def main(config, wandb_run=None):
     if pickle_path and os.path.exists(pickle_path):
         print(f"========== Loading data from pickle: {pickle_path} ==========")
         
-        train_pickle_path = f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_dl_train.pkl"
-        valid_pickle_path = f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_dl_valid.pkl"
-        test_pickle_path = f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_dl_test.pkl"
+        train_pickle_path = f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{config['vqvae']['predictor']['pred_len']}_dl_train.pkl"
+        valid_pickle_path = f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{config['vqvae']['predictor']['pred_len']}_dl_valid.pkl"
+        test_pickle_path = f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{config['vqvae']['predictor']['pred_len']}_dl_test.pkl"
 
         required_files = [train_pickle_path, valid_pickle_path, test_pickle_path]
         if not all(os.path.exists(p) for p in required_files):
@@ -239,4 +251,5 @@ def main(config, wandb_run=None):
 if __name__ == "__main__":
     args = load_args()
     config = load_yaml_param_settings(args.config, args.seed)
-    main(config)
+    metric = main(config)
+    print(metric)

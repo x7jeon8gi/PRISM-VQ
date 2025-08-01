@@ -125,14 +125,14 @@ class FactorVQVAE(pl.LightningModule):
             plt.close()
 
 
-    def preprocessing(self, feature, label):
-        # drop duplicate and drop label nan
-        if feature.shape[0] > 0:
-            dup_mask = drop_duplicates(feature)
-            feature = feature[dup_mask, :, :]
-            label = label[dup_mask]
+    # def preprocessing(self, feature, label):
+    #     # drop duplicate and drop label nan
+    #     if feature.shape[0] > 0:
+    #         dup_mask = drop_duplicates(feature)
+    #         feature = feature[dup_mask, :, :]
+    #         label = label[dup_mask]
 
-        mask, label = drop_na(label)
-        feature = feature[mask.flatten(),:, :]
+    #     mask, label = drop_na(label)
+    #     feature = feature[mask.flatten(),:, :]
 
-        return feature, label.unsqueeze(-1)
+    #     return feature, label.unsqueeze(-1)

@@ -112,7 +112,7 @@ if __name__ == "__main__":
         qlib.init(provider_uri=provider_uri, region=REG_CN)
         name = '[chn]_[all_themes]_[daily]_[vw_cap].csv'
         market = "csi500"
-        benchmark = "SH000500"
+        benchmark = "SH000905"
         region = 'CN'
         query = "location=='chn' and weighting=='vw_cap' and freq=='daily'"
         with open(f"dataset/2024_csi500.yaml", 'r') as f:
@@ -139,7 +139,7 @@ if __name__ == "__main__":
     raw_df = raw_df.query(query)
     factor_mat = (
         raw_df
-        .pivot(index="date", columns="name", values="ret")
+        .pivot(index="date", columns="name", values="ret") # ret is nothing but Kelly Global Factor
         .sort_index()
     )
     
@@ -147,14 +147,13 @@ if __name__ == "__main__":
     qlib_calendar = D.calendar(start_time=config['data_handler_config']['start_time'],
                                end_time=config['data_handler_config']['end_time'])
     factor_mat = factor_mat.reindex(qlib_calendar)
-    
-    # 1~10 거래일 뒤 수익률을 계산
-    horizons = list(range(0, 10))  # [0, 1, …, 9] # 5, 10, 20 : 3개 sensitivity
+
+    horizons = [4]  # only h+1=5
     label_expr  = [f"Ref($close, -{h+1}) / Ref($close, -1) - 1" for h in horizons]
     label_names = [f"RET_{h+1}D" for h in horizons]
 
     config['data_handler_config']["label"] = (label_expr, label_names)
-
+    
     handler = Alpha158WithJKP(factor_mat, **config['data_handler_config'])
 
     dataframe = handler.fetch(col_set="__all", data_key=DataHandlerLP.DK_L)
@@ -165,8 +164,8 @@ if __name__ == "__main__":
     print(f"dataframe shape: {dataframe.shape}")
     print()
 
-    dataframe.to_pickle(f"./dataset/data/{region}/{args.universe}_{seq_len}_dataframe_learn.pkl")
-    df_I.to_pickle(f"./dataset/data/{region}/{args.universe}_{seq_len}_dataframe_infer.pkl")
+    dataframe.to_pickle(f"./dataset/data/{region}/{args.universe}_others_dataframe_learn.pkl")
+    df_I.to_pickle(f"./dataset/data/{region}/{args.universe}_others_dataframe_infer.pkl")
 
     dataset = TSDatasetH(
         handler=handler,
@@ -222,11 +221,11 @@ if __name__ == "__main__":
     dl_valid.config(fillna_type='ffill+bfill')
     dl_test.config(fillna_type='ffill+bfill')
 
-    with open(f"./dataset/data/{region}/{args.universe}_{seq_len}_h{len(horizons)}_dl_train.pkl", "wb") as f:
+    with open(f"./dataset/data/{region}/{args.universe}_others_{seq_len}_dl_train.pkl", "wb") as f:
         pickle.dump(dl_train, f)
-    with open(f"./dataset/data/{region}/{args.universe}_{seq_len}_h{len(horizons)}_dl_valid.pkl", "wb") as f:
+    with open(f"./dataset/data/{region}/{args.universe}_others_{seq_len}_dl_valid.pkl", "wb") as f:
         pickle.dump(dl_valid, f)
-    with open(f"./dataset/data/{region}/{args.universe}_{seq_len}_h{len(horizons)}_dl_test.pkl", "wb") as f:
+    with open(f"./dataset/data/{region}/{args.universe}_others_{seq_len}_dl_test.pkl", "wb") as f:
         pickle.dump(dl_test, f)
-    with open(f"./dataset/data/{region}/{args.universe}_{seq_len}_h{len(horizons)}_dl_dataset.pkl", "wb") as f:
+    with open(f"./dataset/data/{region}/{args.universe}_others_{seq_len}_dl_dataset.pkl", "wb") as f:
         pickle.dump(dataset, f)

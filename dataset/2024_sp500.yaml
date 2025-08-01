@@ -8,7 +8,7 @@ data_handler_config: &data_handler_config
   start_time: 2008-01-01
   end_time: 2024-12-31
   fit_start_time: 2009-01-01
-  fit_end_time: 2021-12-31 # should be equal to valid_period
+  fit_end_time: 2019-12-31 # should be equal to train_period[1] to prevent data leakage
   instruments: *market
   infer_processors:
     - class: RobustZScoreNorm

@@ -33,15 +33,16 @@ def train(config, train_loader, valid_loader, num_batches_per_epoch_train, num_b
     num_embed = config['vqvae']['num_embed'] # ?코드북 크기
     decay = config['vqvae']['quantizer']['decay']
     project_name = config['train']['project_name']
-    group_name = config['data']['universe']
     hidden_channels = config['vqvae']['decoder']['hidden_channels']
     seq_len = config['vqvae']['seq_len']
     vq_embed_dim = config['vqvae']['vq_embed_dim']
     distance = config['vqvae']['quantizer']['distance']
+    pred_len = config['vqvae']['predictor']['pred_len']
     seed = config['train']['seed']
+    universe = config['data']['universe']
 
     if config['train']['run_name'] == "auto":
-        run_name = f'{group_name}v_h{hidden_size}_VQK{num_embed}_C{hidden_channels}_emb{vq_embed_dim}_d{distance}_s{seed}'
+        run_name = f'aaai{universe}_h{hidden_size}_VQK{num_embed}_C{hidden_channels}_emb{vq_embed_dim}_d{distance}p{pred_len}_s{seed}'
     else:
         run_name = config['train']['run_name']
 
@@ -50,7 +51,7 @@ def train(config, train_loader, valid_loader, num_batches_per_epoch_train, num_b
     model = FactorVQVAE(config, T_max)
 
     #* Init logger
-    wandb.init(project=project_name, name=run_name, config=config, group=group_name, entity="x7jeon8gi")
+    wandb.init(project=project_name, name=run_name, config=config, group=universe, entity="x7jeon8gi")
     wandb_logger = WandbLogger(project=project_name, name=run_name, config=config)
     wandb_logger.watch(model, log='all')
 
@@ -109,9 +110,15 @@ if __name__ == "__main__":
     if config['data']['universe'] == 'csi300':  
         region_code = 'CN'
         universe_prefix = 'csi300'
+    elif config['data']['universe'] == 'csi500':
+        region_code = 'CN'
+        universe_prefix = 'csi500'
     elif config['data']['universe'] == 'sp500':
         region_code = 'US'
         universe_prefix = 'sp500'
+    elif config['data']['universe'] == 'nasdaq':
+        region_code = 'US'
+        universe_prefix = 'nasdaq'
     else:
         raise ValueError(f"Invalid universe: {config['data']['universe']}")
     region = get_region(region_code)
@@ -122,38 +129,48 @@ if __name__ == "__main__":
     print(f"Universe: {config['data']['universe']}")
     
     ###### Load dataset ######
-    # 피클 파일이 존재하면 로드하고, 없으면 Alpha158 사용
-    pickle_path = config['data'].get('data_path')
-    
-    if pickle_path and os.path.exists(pickle_path):
-        print(f"========== Loading data from pickle: {pickle_path} ==========")
-        train_prepare = pickle.load(open(f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_dl_train.pkl", 'rb'))
-        valid_prepare = pickle.load(open(f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_dl_valid.pkl", 'rb'))
-        test_prepare = pickle.load(open(f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_dl_test.pkl", 'rb'))
-    
+    if universe_prefix != 'nasdaq':
+        # 피클 파일이 존재하면 로드하고, 없으면 Alpha158 사용
+        pickle_path = config['data'].get('data_path')
+        pred_horizon = config['vqvae']['predictor']['pred_len']
+        if pickle_path and os.path.exists(pickle_path):
+            print(f"========== Loading data from pickle: {pickle_path} ==========")
+            train_prepare = pickle.load(open(f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{pred_horizon}_dl_train.pkl", 'rb'))
+            valid_prepare = pickle.load(open(f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{pred_horizon}_dl_valid.pkl", 'rb'))
+            test_prepare = pickle.load(open(f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{pred_horizon}_dl_test.pkl", 'rb'))
+        
+        else:
+            print(f"Using Alpha158 handler with qlib data")
+            qlib.init(provider_uri=config['data'].get('provider_uri', "./qlib_data/cn_data"), region=region)
+            dataset = Alpha158(**data_handler_config)
+
+            segments = {
+                'train': config['data']['train_period'],
+                'valid': config['data']['valid_period'],
+                'test': config['data']['test_period'],
+            }
+
+            TsDataset = TSDatasetH(
+                handler=dataset, 
+                segments=segments, 
+                step_len=config['data']['window_size'], 
+            )
+
+            train_prepare = TsDataset.prepare(segments='train', data_key=DataHandlerLP.DK_L)
+            valid_prepare = TsDataset.prepare(segments='valid', data_key=DataHandlerLP.DK_L)
+            test_prepare = TsDataset.prepare(segments='test', data_key=DataHandlerLP.DK_I)
+            train_prepare.config(fillna_type='ffill+bfill')
+            valid_prepare.config(fillna_type='ffill+bfill')
+            test_prepare.config(fillna_type='ffill+bfill')
     else:
-        print(f"Using Alpha158 handler with qlib data")
-        qlib.init(provider_uri=config['data'].get('provider_uri', "./qlib_data/cn_data"), region=region)
-        dataset = Alpha158(**data_handler_config)
-
-        segments = {
-            'train': config['data']['train_period'],
-            'valid': config['data']['valid_period'],
-            'test': config['data']['test_period'],
-        }
-
-        TsDataset = TSDatasetH(
-            handler=dataset, 
-            segments=segments, 
-            step_len=config['data']['window_size'], 
-        )
-
-        train_prepare = TsDataset.prepare(segments='train', data_key=DataHandlerLP.DK_L)
-        valid_prepare = TsDataset.prepare(segments='valid', data_key=DataHandlerLP.DK_L)
-        test_prepare = TsDataset.prepare(segments='test', data_key=DataHandlerLP.DK_I)
+        dataset = pickle.load(open(f"{config['data']['data_path']}/{region_code}/{universe_prefix}_data.pkl", 'rb'))
+        train_prepare = dataset.prepare(segments='train', data_key=DataHandlerLP.DK_L)
+        valid_prepare = dataset.prepare(segments='valid', data_key=DataHandlerLP.DK_L)
+        test_prepare = dataset.prepare(segments='test', data_key=DataHandlerLP.DK_I)
         train_prepare.config(fillna_type='ffill+bfill')
         valid_prepare.config(fillna_type='ffill+bfill')
         test_prepare.config(fillna_type='ffill+bfill')
+        
     num_workers = config['train']['num_workers']
     train_loader, num_batches_per_epoch_train = init_data_loader(train_prepare, shuffle=True, num_workers=num_workers)
     valid_loader, num_batches_per_epoch_valid = init_data_loader(valid_prepare, shuffle=False, num_workers=num_workers)

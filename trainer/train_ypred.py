@@ -18,38 +18,39 @@ from module.layers.src import RevIN
 from utils import corr_cluster_order
 from torch.optim.lr_scheduler import LambdaLR
 import math
+from module.layers.src import ListNetLoss
 
-def quantile_regression_loss(y_pred: torch.Tensor, y_true: torch.Tensor, tau: float):
-    """
-    배치 단위로 Quantile Regression Loss(tilted loss) 계산
-    Args:
-        y_pred: (B,) 예측값
-        y_true: (B,) 실제값
-        tau: 분위수 (0 < tau < 1), 예: 0.1 또는 0.9
-    Returns:
-        loss: 스칼라 텐서
-    """
-    diff = y_true - y_pred  # (B,)
-    # tau * max(diff,0) + (1 - tau) * max(-diff,0)
-    # → 구형 함수(tilted), 좌/우 다른 기울기를 줌
-    loss = torch.max(tau * diff, (tau - 1) * diff)
-    # loss는 (B,) 형태, 배치 평균 반환
-    return torch.mean(loss)
+# def quantile_regression_loss(y_pred: torch.Tensor, y_true: torch.Tensor, tau: float):
+#     """
+#     배치 단위로 Quantile Regression Loss(tilted loss) 계산
+#     Args:
+#         y_pred: (B,) 예측값
+#         y_true: (B,) 실제값
+#         tau: 분위수 (0 < tau < 1), 예: 0.1 또는 0.9
+#     Returns:
+#         loss: 스칼라 텐서
+#     """
+#     diff = y_true - y_pred  # (B,)
+#     # tau * max(diff,0) + (1 - tau) * max(-diff,0)
+#     # → 구형 함수(tilted), 좌/우 다른 기울기를 줌
+#     loss = torch.max(tau * diff, (tau - 1) * diff)
+#     # loss는 (B,) 형태, 배치 평균 반환
+#     return torch.mean(loss)
 
-def combined_quantile_loss(y_pred: torch.Tensor, y_true: torch.Tensor, quantiles: list = [0.1, 0.5, 0.9]):
-    """
-    여러 분위수에 대한 Quantile Loss의 가중 평균
-    Args:
-        y_pred: (B,) 예측값 
-        y_true: (B,) 실제값
-        quantiles: 사용할 분위수 리스트
-    Returns:
-        loss: 스칼라 텐서
-    """
-    total_loss = 0.0
-    for tau in quantiles:
-        total_loss += quantile_regression_loss(y_pred, y_true, tau)
-    return total_loss / len(quantiles)
+# def combined_quantile_loss(y_pred: torch.Tensor, y_true: torch.Tensor, quantiles: list = [0.1, 0.5, 0.9]):
+#     """
+#     여러 분위수에 대한 Quantile Loss의 가중 평균
+#     Args:
+#         y_pred: (B,) 예측값 
+#         y_true: (B,) 실제값
+#         quantiles: 사용할 분위수 리스트
+#     Returns:
+#         loss: 스칼라 텐서
+#     """
+#     total_loss = 0.0
+#     for tau in quantiles:
+#         total_loss += quantile_regression_loss(y_pred, y_true, tau)
+#     return total_loss / len(quantiles)
 
 class LatentValueHead(nn.Module):
     def __init__(self, d_latent, K):
@@ -161,17 +162,13 @@ class GenerateReturn(pl.LightningModule):
         
         self.aux_weight = config['predictor']['aux_weight']
 
-        # Quantile Loss 설정
-        self.use_quantile = config['predictor'].get('use_quantile', False)
-        self.quantile_gamma = config['predictor'].get('quantile_gamma', 0.1)  # γ 가중치
-        self.quantile_tau = config['predictor'].get('quantile_tau', 0.5)     # 분위수
-
         self.ic = []
         self.ric = []
         self.best_val_loss = float('inf')
         self.best_metrics_at_min_loss = {}
         self.rank = config['predictor']['rank']
         self.rank_loss = RankLoss(alpha=self.rank)
+        self.listNet_loss = ListNetLoss(temperature=1.0)
 
     def configure_optimizers(self):
         optimizer  = torch.optim.AdamW(self.parameters(), lr=self.config['train']['learning_rate'], weight_decay=1e-5)
@@ -232,6 +229,7 @@ class GenerateReturn(pl.LightningModule):
             f_prior  = prior_factor_normed, # (B,P)
             f_latent = f_latent,            # (B,K)
         )
+        loss_imp = torch.clamp(loss_imp, min=0, max=1)
         return y_pred, beta_p, beta_l, z_q, loss_imp
 
 
@@ -240,20 +238,17 @@ class GenerateReturn(pl.LightningModule):
         y_pred, beta_p, beta_l, z_q, aux_loss = self.forward(feature, prior_factor)
 
         # 기본 MSE 손실 (RankLoss 사용)
-        mse_loss = self.rank_loss(y_pred, label) 
+        mse_loss = self.rank_loss(y_pred, label)
+        rank_loss = self.listNet_loss(y_pred, label)
         
         # Quantile Loss 추가 (옵션)
-        if self.use_quantile:
-            quantile_loss = quantile_regression_loss(y_pred, label, self.quantile_tau)
-            main_loss = mse_loss + self.quantile_gamma * quantile_loss
-            self.log('train_quantile_loss', quantile_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
-        else:
-            main_loss = mse_loss
+        main_loss = mse_loss + rank_loss
             
         loss = main_loss + self.aux_weight * aux_loss
         
         self.log('train_loss', loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         self.log('train_mse_loss', mse_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
+        self.log('train_rank_loss', rank_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         self.log('train_aux_loss', aux_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         return {"loss": loss}
     
@@ -263,19 +258,16 @@ class GenerateReturn(pl.LightningModule):
 
         # 기본 MSE 손실 (RankLoss 사용)
         mse_loss = self.rank_loss(y_pred, label)
+        rank_loss = self.listNet_loss(y_pred, label)
         
         # Quantile Loss 추가 (옵션)
-        if self.use_quantile:
-            quantile_loss = quantile_regression_loss(y_pred, label, self.quantile_tau)
-            main_loss = mse_loss + self.quantile_gamma * quantile_loss
-            self.log('val_quantile_loss', quantile_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
-        else:
-            main_loss = mse_loss
+        main_loss = mse_loss + rank_loss
             
         loss = main_loss + self.aux_weight * aux_loss
         
         self.log('val_loss', loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         self.log('val_mse_loss', mse_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
+        self.log('val_rank_loss', rank_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         self.log('val_aux_loss', aux_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         
         daily_ic, daily_ric = calc_ic(y_pred.cpu().numpy(), label.cpu().numpy())
@@ -302,6 +294,8 @@ class GenerateReturn(pl.LightningModule):
         self.ric = []
 
         val_loss_epoch = self.trainer.callback_metrics.get('val_loss')
+        val_rank_loss_epoch = self.trainer.callback_metrics.get('val_rank_loss')
+        
         if val_loss_epoch is not None and val_loss_epoch < self.best_val_loss:
             # 현재 에폭이 이전까지의 최소 validation loss보다 낮다면 업데이트
             self.best_val_loss = val_loss_epoch
@@ -315,6 +309,8 @@ class GenerateReturn(pl.LightningModule):
             self.log_dict(self.best_metrics_at_min_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
         if val_loss_epoch is not None:
             self.log('val_loss_epoch', val_loss_epoch, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+        if val_rank_loss_epoch is not None:
+            self.log('val_rank_loss_epoch', val_rank_loss_epoch, on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
 
     def init_from_ckpt(self, path, ignore_keys=list()):
