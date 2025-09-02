@@ -194,7 +194,7 @@ def train(config, train_loader,
 
     wandb.finish()
 
-    return metric
+    return metric['RankIC']
 
 
 def main(config, wandb_run=None):
@@ -246,7 +246,10 @@ def main(config, wandb_run=None):
     train_loader, num_batches_per_epoch_train = init_data_loader(train_prepare, shuffle=True, num_workers=num_workers)
     valid_loader, num_batches_per_epoch_valid = init_data_loader(valid_prepare, shuffle=False, num_workers=num_workers)
     test_loader, num_batches_per_epoch_test = init_data_loader(test_prepare, shuffle=False, num_workers=num_workers)
-    train(config, train_loader, valid_loader, num_batches_per_epoch_train, test_loader, wandb_run=wandb_run)
+    
+    # train 함수의 반환값을 받아서 전달해야 함
+    ric_score = train(config, train_loader, valid_loader, num_batches_per_epoch_train, test_loader, wandb_run=wandb_run)
+    return ric_score
 
 if __name__ == "__main__":
     args = load_args()

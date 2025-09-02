@@ -302,7 +302,7 @@ class FactorGatedMoE(nn.Module):
             load = self._gates_to_load(gates)
         return gates, load
 
-    def forward(self, x, z, loss_coef=1e-2):
+    def forward(self, x, z, loss_coef=1 ): #1e-2):
         """Args:
         x: tensor shape [batch_size, input_size]
         train: a boolean scalar.

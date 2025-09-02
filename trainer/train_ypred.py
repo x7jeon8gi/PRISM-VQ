@@ -86,7 +86,8 @@ class GenerateReturn(pl.LightningModule):
         self.hidden_size   = vqvae_cfg['hidden_size']  # H (GRU 출력 차원)
         self.vq_embed_dim  = vqvae_cfg['vq_embed_dim'] # d (VQ 차원, Encoder 출력 차원)
         self.seq_len       = vqvae_cfg['seq_len'] # T_window for reconstruction
-
+        self.aux_imp       = config['predictor']['aux_imp']
+        
         # Quantizer 파라미터
         self.decay         = vqvae_cfg['quantizer']['decay']
         self.commit_weight = vqvae_cfg['quantizer']['commit_weight']  # beta
@@ -229,7 +230,7 @@ class GenerateReturn(pl.LightningModule):
             f_prior  = prior_factor_normed, # (B,P)
             f_latent = f_latent,            # (B,K)
         )
-        loss_imp = torch.clamp(loss_imp, min=0, max=1)
+        loss_imp = torch.clamp(loss_imp, min=0, max=self.aux_imp) #! loss clamp?
         return y_pred, beta_p, beta_l, z_q, loss_imp
 
 
@@ -239,16 +240,16 @@ class GenerateReturn(pl.LightningModule):
 
         # 기본 MSE 손실 (RankLoss 사용)
         mse_loss = self.rank_loss(y_pred, label)
-        rank_loss = self.listNet_loss(y_pred, label)
+        # rank_loss = self.listNet_loss(y_pred, label)
         
         # Quantile Loss 추가 (옵션)
-        main_loss = mse_loss + rank_loss
+        main_loss = mse_loss #  + rank_loss
             
         loss = main_loss + self.aux_weight * aux_loss
         
         self.log('train_loss', loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         self.log('train_mse_loss', mse_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
-        self.log('train_rank_loss', rank_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
+        # self.log('train_rank_loss', rank_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         self.log('train_aux_loss', aux_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         return {"loss": loss}
     
@@ -258,16 +259,16 @@ class GenerateReturn(pl.LightningModule):
 
         # 기본 MSE 손실 (RankLoss 사용)
         mse_loss = self.rank_loss(y_pred, label)
-        rank_loss = self.listNet_loss(y_pred, label)
+        # rank_loss = self.listNet_loss(y_pred, label)
         
         # Quantile Loss 추가 (옵션)
-        main_loss = mse_loss + rank_loss
+        main_loss = mse_loss # + rank_loss
             
         loss = main_loss + self.aux_weight * aux_loss
         
         self.log('val_loss', loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         self.log('val_mse_loss', mse_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
-        self.log('val_rank_loss', rank_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
+        # self.log('val_rank_loss', rank_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         self.log('val_aux_loss', aux_loss, on_step=True, on_epoch=True, logger=True, sync_dist=True)
         
         daily_ic, daily_ric = calc_ic(y_pred.cpu().numpy(), label.cpu().numpy())
@@ -294,7 +295,7 @@ class GenerateReturn(pl.LightningModule):
         self.ric = []
 
         val_loss_epoch = self.trainer.callback_metrics.get('val_loss')
-        val_rank_loss_epoch = self.trainer.callback_metrics.get('val_rank_loss')
+        # val_rank_loss_epoch = self.trainer.callback_metrics.get('val_rank_loss')
         
         if val_loss_epoch is not None and val_loss_epoch < self.best_val_loss:
             # 현재 에폭이 이전까지의 최소 validation loss보다 낮다면 업데이트
@@ -309,8 +310,8 @@ class GenerateReturn(pl.LightningModule):
             self.log_dict(self.best_metrics_at_min_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
         if val_loss_epoch is not None:
             self.log('val_loss_epoch', val_loss_epoch, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-        if val_rank_loss_epoch is not None:
-            self.log('val_rank_loss_epoch', val_rank_loss_epoch, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+        # if val_rank_loss_epoch is not None:
+        #     self.log('val_rank_loss_epoch', val_rank_loss_epoch, on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
 
     def init_from_ckpt(self, path, ignore_keys=list()):

@@ -125,6 +125,7 @@ if __name__ == "__main__":
         market = "sp500" 
         benchmark ="^gspc" 
         region = 'US'
+        print(f"provider_uri: {provider_uri}, region: {REG_US}, name: {name}")
         qlib.init(provider_uri=provider_uri, region=REG_US)
         with open(f"dataset/2024_sp500.yaml", 'r') as f:
             config = yaml.safe_load(f)
@@ -188,7 +189,7 @@ if __name__ == "__main__":
     dl_valid = dataset.prepare(
         "valid", col_set=["feature", "prior", "label"], data_key=DataHandlerLP.DK_L)
     dl_test = dataset.prepare(
-        "test", col_set=["feature", "prior", "label"], data_key=DataHandlerLP.DK_I)
+        "test", col_set=["feature", "prior", "label"], data_key=DataHandlerLP.DK_I) # DK_I
     
     print(f"dl_train 타입: {type(dl_train)}")
     

@@ -22,6 +22,7 @@ data_handler_config: &data_handler_config
       kwargs:
         fields_group: prior
         clip_outlier: true 
+        
   learn_processors:
     - class: DropnaLabel
     - class: CSRankNorm # CSZScoreNorm # CSRankNorm

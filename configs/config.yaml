@@ -41,6 +41,9 @@ vqvae:
     output_dim: 1
     pred_weight: 0.0001
 
+# aaaisp500_h128_VQK32_C128_emb128_dl2p10_s42-epoch=10-val_loss=0.6828.ckpt
+# aaaisp500_h128_VQK64_C128_emb128_dl2p10_s42-epoch=9-val_loss=0.6572.ckpt
+# aaaisp500_h128_VQK128_C128_emb128_dl2p10_s42-epoch=6-val_loss=0.6665.ckpt
 # aaaisp500_h128_VQK256_C128_emb128_dl2p10_s42-epoch=8-val_loss=0.6506.ckpt
 # aaaisp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=15-val_loss=0.6465.ckpt
 # aaaisp500_h128_VQK1024_C128_emb128_dl2p10_s42-epoch=25-val_loss=0.6501.ckpt
@@ -48,12 +51,12 @@ predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_hea
   saved_model: "aaaisp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=15-val_loss=0.6465.ckpt"
   num_features: 158
   individual: False
-  aux_weight: 0.01  # ! 0.01 혹은 0.05 만 쓸 것  미국시장에서 0.1 실험 해봄 0.005 , 0.0001 , 0.001
+  aux_weight: 0.001  # ! 0.01 혹은 0.05 만 쓸 것  미국시장에서 0.1 실험 해봄 0.005 , 0.0001 , 0.001
   kernel_size: 3
-  k: 4  # top-k  전문가 
-  n_expert: 8 # !   # number of expert
+  k: 1 # top-k  전문가 
+  n_expert: 4 # !   # number of expert
   pred_len: 20  # for DLinear
-  moe_hidden: 64 # gate and noise  
+  moe_hidden: 64 # gate and noise  --- 현재 여러 결과상 64가 제일 좋아보임. 
   dropout: 0.1
 
   transformer:
@@ -63,20 +66,21 @@ predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_hea
     num_layers: 1
     d_model: 32   # ! 
     dim_feedforward: 64
-    dropout: 0.5 #?
+    dropout: 0.1 #? #? #? #?#?#??   CSI300에 대해서 0.1로도 실험해보자. 
     batch_first: True
  
   rank : 0
   target_day: 5
   use_prior: True
+  aux_imp: 3
 
 train:
   seed: 0 # ! SEED EXPERIMENTS
   device: "cuda"
   batch_size: 300 #(대략?)
   learning_rate: 0.0001 #?
-  num_epochs: 30
-  project_name: "AAAI"
+  num_epochs: 70
+  project_name: "ESWA"
   run_name: "auto"
   gpu_counts: 1
   precision: 32 
@@ -87,7 +91,7 @@ train:
   early_stopping:
     monitor: "val_loss"
     min_delta: 0.00001
-    patience: 15
+    patience: 20
     verbose: True
     mode: "min"
 
