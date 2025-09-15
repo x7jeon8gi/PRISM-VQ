@@ -1,6 +1,7 @@
 import wandb
 import pandas as pd
 import numpy as np
+import hashlib
 
 def log_metrics_as_bar_chart(metrics_dict, model_name=None):
     """
@@ -24,13 +25,16 @@ def log_metrics_as_bar_chart(metrics_dict, model_name=None):
     # 2) wandb.Table 객체 생성
     table = wandb.Table(data=data, columns=["Metric", "Value"])
     
-    # 3) 모델 이름에 따라 차트 제목과 로그 키 설정
+    # 3) 모델 이름에 따라 차트 제목과 (짧은) 로그 키 설정
     if model_name:
         chart_title = f"Metrics Bar Chart - {model_name}"
-        log_key = f"metrics_bar_chart_{model_name}"
+        # W&B는 내부적으로 run-<id>-<key> 형태로 아티팩트를 생성하므로,
+        # 128자 제한을 피하기 위해 key는 짧은 해시로 축약한다.
+        short_token = hashlib.md5(model_name.encode("utf-8")).hexdigest()[:8]
+        log_key = f"mbar_{short_token}"
     else:
         chart_title = "Metrics Bar Chart"
-        log_key = "metrics_bar_chart"
+        log_key = "mbar"
     
     # 4) wandb.plot.bar를 통해 바 차트 생성
     bar_chart = wandb.plot.bar(

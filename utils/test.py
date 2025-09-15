@@ -62,7 +62,6 @@ def run_inference(model, data_loader, config, device='cuda'):
     n_prior_factors = config_vq['num_prior_factors']
     target_index = config_pred['target_day'] - 1 # ex. 5 -> 4 (start from 0)
 
-        
     model.eval()
     model.to(device)
     preds = []
@@ -85,7 +84,13 @@ def run_inference(model, data_loader, config, device='cuda'):
         future_returns = batch[:, -1, n_features+n_prior_factors: ] # (300, 10)
         label = future_returns[:, target_index] # (300, 1)
 
-        y_pred, beta_p, beta_l, z_q, _ = model(feature, prior_factor)
+        # wo_prior 버전에서는 prior_factor를 사용하지 않음
+        if hasattr(model, 'num_prior_factors') and hasattr(model, 'return_predictor') and not model.return_predictor.use_prior:
+            # wo_prior 모델인 경우 feature만 전달
+            y_pred, aux_loss = model(feature)
+        else:
+            # 일반 모델인 경우 기존 방식 사용
+            y_pred, beta_p, beta_l, z_q, _ = model(feature, prior_factor)
 
         # 배치별 IC 계산 (validation step과 동일한 방식)
         daily_ic, daily_ric = calc_ic(y_pred.cpu().detach().numpy(), label.cpu().detach().numpy())

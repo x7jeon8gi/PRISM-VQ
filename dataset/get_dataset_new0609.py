@@ -154,8 +154,7 @@ if __name__ == "__main__":
     label_expr  = [f"Ref($close, -{h+1}) / Ref($close, -1) - 1" for h in horizons]
     label_names = [f"RET_{h+1}D" for h in horizons]
 
-    config['data_handler_config']["label"] = (label_expr, label_names)
-
+    config['data_handler_config']["label"] = (label_expr, label_names) 
     handler = Alpha158WithJKP(factor_mat, **config['data_handler_config'])
 
     dataframe = handler.fetch(col_set="__all", data_key=DataHandlerLP.DK_L)
@@ -183,7 +182,7 @@ if __name__ == "__main__":
         os.makedirs("./dataset/data/US")
 
     
-    print("Preparing datasets...")
+    print("Preparing datasets...") # 실제로 dataloader에서 나오면: feature, prior, label(future_returns) 순서로 나옴
     dl_train = dataset.prepare(       
         "train", col_set=["feature", "prior", "label"], data_key=DataHandlerLP.DK_L)
     dl_valid = dataset.prepare(

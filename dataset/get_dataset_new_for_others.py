@@ -52,18 +52,27 @@ class GlobalFactorMerger(Processor):
         self.fg = fields_group          # 새 fields_group 이름
 
     def __call__(self, df: pd.DataFrame):
-        # -------------- ① 브로드캐스트 --------------
+        df = df.sort_index(level="datetime")
+        # -------------- ① 브로드캐스트 (수정된 버전) --------------
         dt_index = df.index.get_level_values("datetime")
-        fac_block = self.factor_mat.loc[dt_index].values
-        repeat = int(len(df) / len(dt_index))
-        fac_block = np.repeat(fac_block, repeat, axis=0)
+        
+        # 각 날짜별로 동일한 factor 값을 모든 주식에 브로드캐스트
+        unique_dates = dt_index.unique()
+        fac_values_list = []
+        
+        for date in dt_index:
+            # 각 날짜에 해당하는 factor 값을 가져옴 (단일 행)
+            fac_row = self.factor_mat.loc[date].values
+            fac_values_list.append(fac_row)
+        
+        fac_block = np.array(fac_values_list)
 
         # -------------- ② DataFrame + Multi-Index --------------
         fac_df = pd.DataFrame(
             fac_block,
             index=df.index,
             columns=pd.MultiIndex.from_tuples(
-                [('prior', c) for c in factor_mat.columns]
+                [(self.fg, c) for c in self.factor_mat.columns]
             ),
         )
         # -------------- ③ concat & return --------------
@@ -152,12 +161,12 @@ if __name__ == "__main__":
     label_expr  = [f"Ref($close, -{h+1}) / Ref($close, -1) - 1" for h in horizons]
     label_names = [f"RET_{h+1}D" for h in horizons]
 
-    config['data_handler_config']["label"] = (label_expr, label_names)
+    config['data_handler_config']["label"] = (label_expr, label_names) # 순서: label_expr, label_names
     
     handler = Alpha158WithJKP(factor_mat, **config['data_handler_config'])
-
-    dataframe = handler.fetch(col_set="__all", data_key=DataHandlerLP.DK_L)
-    df_I = handler.fetch(col_set="__all", data_key=DataHandlerLP.DK_I)
+    
+    dataframe = handler.fetch(col_set=["feature", "prior", "label"], data_key=DataHandlerLP.DK_L)
+    df_I = handler.fetch(col_set=["feature", "prior", "label"], data_key=DataHandlerLP.DK_I)
     print("=== 디버깅: dataframe 인덱스 확인 ===")
     print(f"dataframe 인덱스 이름들: {dataframe.index.names}")
     print(f"dataframe 인덱스 샘플: {dataframe.index[:5]}")
@@ -181,7 +190,7 @@ if __name__ == "__main__":
         os.makedirs("./dataset/data/US")
 
     
-    print("Preparing datasets...")
+    print("Preparing datasets...") #! 순서: feature, prior, label(future_returns)
     dl_train = dataset.prepare(       
         "train", col_set=["feature", "prior", "label"], data_key=DataHandlerLP.DK_L)
     dl_valid = dataset.prepare(

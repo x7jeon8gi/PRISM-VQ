@@ -1,19 +1,10 @@
-data:
-  universe: 'sp500'
-  data_path: 'dataset/data'
-  window_size: 20
-  step: 1
-  train_period : ["2009-01-01", "2019-12-31"] # 10년 
-  valid_period : ["2020-01-01", "2021-12-31"] # 2년
-  test_period  : ["2022-01-01", "2024-12-31"] # 3년
-
 vqvae:
   num_features: 158
   seq_len: 20 
   hidden_size: 128     # hidden dimension (내부)
   num_prior_factors: 13  # -> vq_embed_dim 과 합 45 / 77
   vq_embed_dim: 128    # element 수로 해석가능함.
-  num_embed: 512       #! 코드북 갯수
+  num_embed: 128       #!!!!!! 코드북 갯수
   # encoder 파라미터
   encoder:
     num_heads: 2 
@@ -41,20 +32,33 @@ vqvae:
     output_dim: 1
     pred_weight: 0.0001
 
-# aaaisp500_h128_VQK32_C128_emb128_dl2p10_s42-epoch=10-val_loss=0.6828.ckpt
-# aaaisp500_h128_VQK64_C128_emb128_dl2p10_s42-epoch=9-val_loss=0.6572.ckpt
+data:
+  universe: 'sp500' #!!! !!!!!!!!!!!!!!!!!
+  data_path: 'dataset/data'
+  window_size: 20
+  step: 1
+  train_period : ["2009-01-01", "2019-12-31"] # 10년 
+  valid_period : ["2020-01-01", "2021-12-31"] # 2년
+  test_period  : ["2022-01-01", "2024-12-31"] # 3년
+
+## S&P500
 # aaaisp500_h128_VQK128_C128_emb128_dl2p10_s42-epoch=6-val_loss=0.6665.ckpt
 # aaaisp500_h128_VQK256_C128_emb128_dl2p10_s42-epoch=8-val_loss=0.6506.ckpt
 # aaaisp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=15-val_loss=0.6465.ckpt
-# aaaisp500_h128_VQK1024_C128_emb128_dl2p10_s42-epoch=25-val_loss=0.6501.ckpt
+
+## CSI300
+# aaaicsi500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=22-val_loss=0.5147.ckpt
+# aaaicsi500_h128_VQK256_C128_emb128_dl2p10_s42-epoch=22-val_loss=0.5373.ckpt
+# aaaicsi500_h128_VQK128_C128_emb128_dl2p10_s42-epoch=14-val_loss=0.5190.ckpt
+
 predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_heads(n), dropout(d)
-  saved_model: "aaaisp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=15-val_loss=0.6465.ckpt"
+  saved_model: "aaaisp500_h128_VQK128_C128_emb128_dl2p10_s42-epoch=6-val_loss=0.6665.ckpt"
   num_features: 158
   individual: False
-  aux_weight: 0.001  # ! 0.01 혹은 0.05 만 쓸 것  미국시장에서 0.1 실험 해봄 0.005 , 0.0001 , 0.001
+  aux_weight: 0.01  # ! 0.01 혹은 0.05 만 쓸 것  미국시장에서 0.1 실험 해봄 0.005 , 0.0001 , 0.001
   kernel_size: 3
-  k: 1 # top-k  전문가 
-  n_expert: 4 # !   # number of expert
+  k: 2 # top-k  전문가 
+  n_expert: 6 # !   # number of expert
   pred_len: 20  # for DLinear
   moe_hidden: 64 # gate and noise  --- 현재 여러 결과상 64가 제일 좋아보임. 
   dropout: 0.1
@@ -62,11 +66,11 @@ predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_hea
   transformer:
     arch_type: 'naive' # naive, rwkv, patch_tst, tssmixer, temporal_conv, hybrid
     pe_kind: 'rope' # sin, learnable, relative, rope, time2vec, tape, tupe, conv_spe, temporal_pe, adaptive, fourier
-    num_heads: 2
+    num_heads: 2 
     num_layers: 1
-    d_model: 32   # ! 
-    dim_feedforward: 64
-    dropout: 0.1 #? #? #? #?#?#??   CSI300에 대해서 0.1로도 실험해보자. 
+    d_model: 32   # !  #* 32
+    dim_feedforward: 64 #* 64
+    dropout: 0.1 #?. 
     batch_first: True
  
   rank : 0

@@ -22,6 +22,9 @@ data_handler_config: &data_handler_config
       kwargs:
         fields_group: prior
         clip_outlier: true 
+    - class: Fillna
+      kwargs:
+        fields_group: prior
         
   learn_processors:
     - class: DropnaLabel

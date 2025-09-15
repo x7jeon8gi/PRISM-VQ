@@ -55,7 +55,7 @@ def init_data_loader(handler, shuffle, num_workers=0, index=False):
         return batch
     
     data_loader = DataLoader(handler,
-                             sampler=sampler,
+                             batch_sampler=sampler,
                              pin_memory=True,
                              num_workers=num_workers,
                              drop_last=False,

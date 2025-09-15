@@ -81,7 +81,8 @@ def train(config, train_loader, valid_loader, num_batches_per_epoch_train, num_b
                          accelerator='gpu',
                          devices=1, 
                          precision=config['train']['precision'],
-                         gradient_clip_val=config['train'].get('gradient_clip_val', 5)
+                         gradient_clip_val=config['train'].get('gradient_clip_val', 5),
+                         deterministic=True
                          )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
@@ -102,7 +103,7 @@ if __name__ == "__main__":
     
     # * Set seed
     seed_everything(config['train']['seed'])
-
+    pl.seed_everything(config['train']['seed'])
     # # * Set logger
     # logger = set_logger(config['train']['run_name'], os.path.join(get_root_dir(), 'logs'))
 
