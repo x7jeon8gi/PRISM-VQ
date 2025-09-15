@@ -57,8 +57,8 @@ predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_hea
   individual: False
   aux_weight: 0.01  # ! 0.01 혹은 0.05 만 쓸 것  미국시장에서 0.1 실험 해봄 0.005 , 0.0001 , 0.001
   kernel_size: 3
-  k: 2 # top-k  전문가 
-  n_expert: 6 # !   # number of expert
+  k: 4 # top-k  전문가 
+  n_expert: 8 # !   # number of expert
   pred_len: 20  # for DLinear
   moe_hidden: 64 # gate and noise  --- 현재 여러 결과상 64가 제일 좋아보임. 
   dropout: 0.1
@@ -76,7 +76,7 @@ predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_hea
   rank : 0
   target_day: 5
   use_prior: True
-  aux_imp: 3
+  aux_imp: 1
 
 train:
   seed: 0 # ! SEED EXPERIMENTS
@@ -95,7 +95,7 @@ train:
   early_stopping:
     monitor: "val_loss"
     min_delta: 0.00001
-    patience: 20
+    patience: 25
     verbose: True
     mode: "min"
 
