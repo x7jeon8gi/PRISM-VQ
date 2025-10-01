@@ -1,270 +1,379 @@
 import os
+import shutil
+import tempfile
+from pathlib import Path
+from typing import List, Optional, Tuple
+
 # PyTorch를 import 하기 전에 환경 변수를 설정합니다.
-os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8' 
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+
+import copy
+import hydra
+import pandas as pd
+import pickle
+import pytorch_lightning as pl
 import torch
 import wandb
-import pandas as pd
-import logging
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
+from hydra import compose, initialize_config_dir
+from hydra.core.global_hydra import GlobalHydra
+from hydra.core.hydra_config import HydraConfig
+from hydra.types import RunMode
+from hydra.utils import instantiate
+from omegaconf import DictConfig, OmegaConf
+from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.loggers import WandbLogger
-from qlib.data.dataset import TSDatasetH, DataHandlerLP
-from trainer.train_ypred import GenerateReturn
-from utils import load_yaml_param_settings, load_args, get_root_dir, save_model, seed_everything, log_metrics_as_bar_chart
+
 from dataset.dataset import init_data_loader
-from utils.logger import set_logger
-from qlib.constant import REG_CN, REG_US
-import qlib
-from qlib.contrib.data.handler import Alpha158
-from qlib.data import D
-import pickle
-from utils import run_inference
+from trainer.train_ypred import GenerateReturn
+from utils import (get_root_dir, log_metrics_as_bar_chart, run_inference,
+                   seed_everything)
+from utils.wandb import make_wandb_config
+
 torch.set_float32_matmul_precision('high')
 
+# OmegaConf resolver 등록 - n_expert의 절반을 계산하는 함수
+OmegaConf.register_new_resolver("half", lambda x: int(x) // 2)
 
-def get_region(region_code):
-    """지역 코드에 따라 적절한 qlib 지역 상수를 반환합니다."""
-    region_map = {
-        'CN': REG_CN,
-        'US': REG_US,
-    }
-    return region_map.get(region_code, REG_CN)  # 기본값은 REG_CN
+_SNAPSHOT_ENV_KEY = "STAGE2_CONFIG_SNAPSHOT_DIR"
+_ORIGINAL_CWD: Optional[Path] = None
 
-def generate_run_name(config):
-    """Generates a detailed run name from the configuration."""
-    n_expert   = config['predictor']['n_expert'] 
-    k          = config['predictor']['k']
-    #pe_kind    = config['predictor']['transformer']['pe_kind']
-    dim        = config['predictor']['transformer']['d_model']
-    n_heads    = config['predictor']['transformer']['num_heads']
-    n_layer    = config['predictor']['transformer']['num_layers']
-    dropout    = config['predictor']['transformer']['dropout']
-    aux_weight     = config['predictor']['aux_weight']
-    kernel_size = config['predictor']['kernel_size']
-    seed        = config['train']['seed']
-    
-    saved_model = config['predictor']['saved_model']
+
+def _ensure_config_snapshot() -> Path:
+    """Copy the configs directory once and reuse it during multi-run sweeps."""
+    snapshot_dir = os.environ.get(_SNAPSHOT_ENV_KEY)
+    if snapshot_dir and Path(snapshot_dir).exists():
+        return Path(snapshot_dir)
+
+    configs_dir = Path(__file__).resolve().parent / 'configs'
+    if not configs_dir.exists():
+        raise FileNotFoundError(f"Config directory not found: {configs_dir}")
+
+    runtime = HydraConfig.get()
+    project_root = Path(runtime.runtime.cwd)
+    snapshot_root = project_root / '.hydra_config_snapshots'
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix='stage2_', dir=str(snapshot_root)))
+    frozen_configs = tmp_dir / 'configs'
+    shutil.copytree(configs_dir, frozen_configs)
+
+    os.environ[_SNAPSHOT_ENV_KEY] = str(frozen_configs)
+    return frozen_configs
+
+
+def _compose_frozen_config(overrides: List[str]) -> DictConfig:
+    snapshot_dir = _ensure_config_snapshot()
+
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=str(snapshot_dir), job_name='stage2_frozen'):
+        frozen_cfg = compose(config_name='config', overrides=overrides)
+    GlobalHydra.instance().clear()
+
+    return frozen_cfg
+
+
+def _to_absolute_path(path: str) -> str:
+    if os.path.isabs(path):
+        return path
+    if _ORIGINAL_CWD is None:
+        raise RuntimeError('Original working directory is not set.')
+    return str((_ORIGINAL_CWD / path).resolve())
+
+
+
+def _build_run_name(cfg: DictConfig) -> str:
+    n_expert = cfg.predictor.n_expert
+    k = cfg.predictor.k
+    dim = cfg.predictor.transformer.d_model
+    n_heads = cfg.predictor.transformer.num_heads
+    n_layer = cfg.predictor.transformer.num_layers
+    dropout = cfg.predictor.transformer.dropout
+    aux_weight = cfg.predictor.aux_weight
+    kernel_size = cfg.predictor.kernel_size
+    moe_hidden = cfg.predictor.moe_hidden
+    moe_drop = cfg.predictor.dropout
+    horizon = cfg.predictor.pred_len
+    aux_imp = cfg.predictor.aux_imp
+
+    saved_model = Path(cfg.predictor.saved_model).name
     model_name_part = saved_model.split('-')[0]
-    
-    params = model_name_part.split('_')
-    
+
+    tokens = model_name_part.split('_')
     param_dict = {}
-    for part in params:
-        if part.startswith('VQ'):
-            param_dict['num_embed'] = part[2:]
-        elif part.startswith('n'):
-            param_dict['enc_heads'] = part[1:]
-        elif part.startswith('e'):
-            param_dict['vq_embed_dim'] = part[1:]
-        elif part.startswith('d'):
-            param_dict['dropout_pred'] = part[1:]
-        elif part in ['l2', 'cos']:
-            param_dict['distance'] = part
+    for token in tokens:
+        if token.startswith('VQ'):
+            param_dict['num_embed'] = token[2:]
+        elif token.startswith('n'):
+            param_dict['enc_heads'] = token[1:]
+        elif token.startswith('e'):
+            param_dict['vq_embed_dim'] = token[1:]
+        elif token.startswith('d'):
+            param_dict['dropout_pred'] = token[1:]
+        elif token in ['l2', 'cos']:
+            param_dict['distance'] = token
 
-    num_embed = param_dict.get('num_embed', config['vqvae']['num_embed'])
-    enc_heads = param_dict.get('enc_heads', config['vqvae']['encoder']['num_heads'])
-    vq_embed_dim = param_dict.get('vq_embed_dim', config['vqvae']['vq_embed_dim'])
-    dropout_pred = param_dict.get('dropout_pred', config['vqvae']['predictor']['dropout'])
-    distance = param_dict.get('distance', config['vqvae']['quantizer']['distance'])
-    moe_hidden = config['predictor']['moe_hidden']
-    rank = config['predictor']['rank']
-    moe_drop = config['predictor']['dropout']
-    horizon = config['predictor']['pred_len']
-    aux_imp = config['predictor']['aux_imp']
-    
-    run_name = (
-        f'{seed}_VQ{num_embed}_{config["data"]["universe"]}_mo{n_expert}_k{k}_mh{moe_hidden}_md{moe_drop}_'
-        f'dm{dim}_nh{n_heads}_l{n_layer}_d{dropout}_'
-        f'au{aux_weight}_1h{enc_heads}_1e{vq_embed_dim}_1d{dropout_pred}_1{distance}_p{horizon}_ai{aux_imp}'
+    num_embed = param_dict.get('num_embed', cfg.vqvae.num_embed)
+    enc_heads = param_dict.get('enc_heads', cfg.vqvae.encoder.num_heads)
+    vq_embed_dim = param_dict.get('vq_embed_dim', cfg.vqvae.vq_embed_dim)
+    dropout_pred = param_dict.get('dropout_pred', cfg.vqvae.predictor.dropout)
+    distance = param_dict.get('distance', cfg.vqvae.quantizer.distance)
+
+    return (
+        f"{cfg.train.seed}_VQ{num_embed}_{cfg.data.universe}_mo{n_expert}_"
+        f"k{k}_mh{moe_hidden}_md{moe_drop}_dm{dim}_nh{n_heads}_l{n_layer}_"
+        f"d{dropout}_au{aux_weight}_1h{enc_heads}_1e{vq_embed_dim}_"
+        f"1d{dropout_pred}_1{distance}_p{horizon}_ai{aux_imp}_ks{kernel_size}"
     )
 
-    return run_name
+def _build_wandb_logger(cfg: DictConfig, run_name: str) -> WandbLogger:
+    project_name = f"{cfg.train.project_name}_{cfg.data.universe}_stage2"
+    
+    # config는 나중에 수동으로 업데이트할 거임
+    logger_cfg = {
+        "_target_": "pytorch_lightning.loggers.wandb.WandbLogger",
+        "project": project_name,
+        "name": run_name,
+        "group": cfg.data.universe,
+        "entity": cfg.train.get("wandb_entity"),
+        "save_dir": str(Path(get_root_dir()) / cfg.train.save_dir),
+        "log_model": cfg.train.get("wandb_log_model", False),
+        "reinit": True,
+    }
+    logger_cfg = {k: v for k, v in logger_cfg.items() if v is not None}
+    logger = instantiate(logger_cfg)
+    
+    # wandb가 초기화된 후에 config 업데이트
+    try:
+        clean_config = make_wandb_config(cfg)
+        if hasattr(logger, 'experiment') and clean_config:
+            logger.experiment.config.update(clean_config)
+    except Exception:
+        pass  # config 업데이트 실패해도 상관없음
+    
+    return logger
 
-def train(config, train_loader,
-          valid_loader, 
-          num_batches_per_epoch_train, 
-          test_loader, wandb_run=None):
 
-    run_name = generate_run_name(config)
+def _build_callbacks(cfg: DictConfig, run_name: str) -> Tuple[List[Callback], 'ModelCheckpoint', Optional['ModelCheckpoint']]:
+    from pytorch_lightning.callbacks import ModelCheckpoint  # local import for typing
 
-    # * Init model
-    T_max = num_batches_per_epoch_train * config['train']['num_epochs']
-    model = GenerateReturn(config, T_max=T_max)
+    checkpoint_dir = Path(get_root_dir()) / cfg.train.save_dir
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    #* Init logger
-    if wandb_run:
-        wandb_logger = WandbLogger(experiment=wandb_run)
-    else:
-        project_name = config['train']['project_name']+'_'+config['data']['universe']+'_stage2'
-        group_name = config['data']['universe']
-        wandb_logger = WandbLogger(project=project_name, name=run_name, config=config, group=group_name, entity="x7jeon8gi")
+    early_cfg = cfg.train.early_stopping
+    lr_monitor_cfg = {
+        "_target_": "pytorch_lightning.callbacks.LearningRateMonitor",
+        "logging_interval": "step",
+    }
+    checkpoint_cfg = {
+        "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
+        "save_top_k": 1,
+        "monitor": early_cfg.monitor,
+        "mode": early_cfg.mode,
+        "dirpath": str(checkpoint_dir),
+        "filename": f"{run_name}" + "-{epoch}-{val_loss:.4f}",
+    }
+    # ric_checkpoint_cfg = {
+    #     "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
+    #     "save_top_k": 1,
+    #     "monitor": "Val_RIC",
+    #     "mode": "max",
+    #     "dirpath": str(checkpoint_dir),
+    #     "filename": f"{run_name}" + "-{epoch}-{Val_RIC:.4f}",
+    # }
+    early_stop_cfg = {
+        "_target_": "pytorch_lightning.callbacks.EarlyStopping",
+        "monitor": early_cfg.monitor,
+        "min_delta": early_cfg.min_delta,
+        "patience": early_cfg.patience,
+        "verbose": early_cfg.verbose,
+        "mode": early_cfg.mode,
+    }
+
+    lr_monitor = instantiate(lr_monitor_cfg)
+    checkpoint_callback: ModelCheckpoint = instantiate(checkpoint_cfg)
+    #ric_callback: ModelCheckpoint = instantiate(ric_checkpoint_cfg)
+    early_stop = instantiate(early_stop_cfg)
+
+    callbacks: List[Callback] = [lr_monitor, checkpoint_callback, early_stop]
+    # if cfg.train.get('enable_ric_checkpoint', True):
+    #     callbacks.append(ric_callback)
+    # else:
+    #     ric_callback = None
+
+    return callbacks, checkpoint_callback, #ric_callback
+
+
+def _resolve_data_path(path: Optional[str]) -> Path:
+    if not path:
+        raise FileNotFoundError("`data.data_path` must be provided for stage2 training.")
+    abs_path = Path(_to_absolute_path(path))
+    if not abs_path.exists():
+        raise FileNotFoundError(f"Data path '{abs_path}' does not exist.")
+    return abs_path
+
+
+def _resolve_universe(universe: str) -> Tuple[str, str]:
+    mapping = {
+        'csi300': ('CN', 'csi300'),
+        'csi500': ('CN', 'csi500'),
+        'sp500': ('US', 'sp500'),
+        'nasdaq': ('US', 'nasdaq'),
+    }
+    if universe not in mapping:
+        raise ValueError(f"Invalid universe: {universe}")
+    return mapping[universe]
+
+
+def _prepare_dataloaders(cfg: DictConfig,
+                         region_code: str,
+                         universe_prefix: str):
+    data_path = _resolve_data_path(cfg.data.get('data_path'))
+    horizon = cfg.vqvae.predictor.pred_len
+    window_size = cfg.data.window_size
+    base = f"{universe_prefix}_{window_size}_h{horizon}_dl2"
+
+    file_map = {
+        'train': data_path / region_code / f"{base}_train.pkl",
+        'valid': data_path / region_code / f"{base}_valid.pkl",
+        'test': data_path / region_code / f"{base}_test.pkl",
+    }
+
+    missing = [str(path) for path in file_map.values() if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Missing required pickle files: " + ", ".join(missing) +
+            ". Please ensure data is pre-processed."
+        )
+
+    train_prepare = pickle.load(open(file_map['train'], 'rb'))
+    valid_prepare = pickle.load(open(file_map['valid'], 'rb'))
+    test_prepare = pickle.load(open(file_map['test'], 'rb'))
+
+    num_workers = cfg.train.num_workers
+    train_loader, num_batches_per_epoch_train = init_data_loader(train_prepare, shuffle=True, num_workers=num_workers)
+    valid_loader, _ = init_data_loader(valid_prepare, shuffle=False, num_workers=num_workers)
+    test_loader, _ = init_data_loader(test_prepare, shuffle=False, num_workers=num_workers)
+
+    return train_loader, valid_loader, test_loader, num_batches_per_epoch_train
+
+
+def _make_absolute_saved_model_path(config_dict: dict) -> dict:
+    model_config = copy.deepcopy(config_dict)
+    saved_model = model_config['predictor']['saved_model']
+    saved_model_path = Path(saved_model)
+    if not saved_model_path.is_absolute():
+        saved_model_path = Path(get_root_dir()) / 'checkpoints' / saved_model_path
+    model_config['predictor']['saved_model'] = str(saved_model_path)
+    return model_config
+
+
+def train(cfg: DictConfig,
+          config_dict: dict,
+          train_loader,
+          valid_loader,
+          num_batches_per_epoch_train: int,
+          test_loader):
+    run_name = _build_run_name(cfg)
+    model_config = _make_absolute_saved_model_path(config_dict)
+
+    T_max = num_batches_per_epoch_train * cfg.train.num_epochs
+    model = GenerateReturn(model_config, T_max=T_max)
+    wandb_logger = _build_wandb_logger(cfg, run_name)
     wandb_logger.watch(model, log='all')
+    callbacks, checkpoint_callback = _build_callbacks(cfg, run_name)
 
-    early_stopping_config = config['train']['early_stopping']
-
-    checkpoint_callback = ModelCheckpoint(
-        save_top_k=1,
-        # save_last=True,  # 마지막 에폭도 저장
-        monitor= early_stopping_config['monitor'],
-        mode= early_stopping_config['mode'],
-        dirpath=os.path.join(get_root_dir(), 'checkpoints'),
-        filename=f'{run_name}'+'-{epoch}-{val_loss:.4f}',
-        # verbose=True  # 체크포인트 저장 시 로그 출력
+    trainer = pl.Trainer(
+        logger=wandb_logger,
+        enable_checkpointing=True,
+        callbacks=callbacks,
+        max_epochs=cfg.train.num_epochs,
+        accelerator=cfg.train.get('accelerator', 'gpu'),
+        devices=cfg.train.get('gpu_counts', 1),
+        precision=cfg.train.precision,
+        gradient_clip_val=cfg.train.get('gradient_clip_val', 2),
+        deterministic=True,
+        log_every_n_steps=cfg.train.get('log_every_n_steps', 50),
     )
 
-    checkpoint_callback_for_ric = ModelCheckpoint(
-        save_top_k=1,
-        monitor= 'Val_RIC',
-        mode= 'max',
-        dirpath=os.path.join(get_root_dir(), 'checkpoints'),
-        filename=f'{run_name}'+'-{epoch}-{Val_RIC:.4f}',
-    )
-
-    early_stop_callback = EarlyStopping(
-        monitor=early_stopping_config['monitor'],
-        min_delta=early_stopping_config['min_delta'],
-        patience=early_stopping_config['patience'], 
-        verbose=early_stopping_config['verbose'],
-        mode=early_stopping_config['mode']
-    )
-
-    trainer = pl.Trainer(logger=wandb_logger,
-                         enable_checkpointing=True,
-                         callbacks=[LearningRateMonitor(logging_interval='step'), 
-                                   checkpoint_callback, 
-                                   # checkpoint_callback_for_ric,
-                                   early_stop_callback],
-                         max_epochs=config['train']['num_epochs'],
-                         
-                         # ! 아래 신규 설정
-                         accelerator='gpu',
-                         devices=1, 
-                         precision=config['train']['precision'],
-                         gradient_clip_val=config['train'].get('gradient_clip_val', 2),
-                         deterministic=True
-                         )
-    
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
-    best_checkpoint_path = checkpoint_callback.best_model_path
-    print(f"========== Best checkpoint path: {best_checkpoint_path} ==========")
+    best_path = checkpoint_callback.best_model_path
+    if not best_path:
+        raise RuntimeError("No checkpoint was saved during training.")
+    print(f"========== Best checkpoint path: {best_path} ==========")
     print(f"========== Best validation loss: {checkpoint_callback.best_model_score} ==========")
 
-    best_model = GenerateReturn.load_from_checkpoint(best_checkpoint_path, config=config, T_max=T_max)
-    # 학습 시와 동일한 모델 상태 설정
+    best_model = GenerateReturn.load_from_checkpoint(best_path, config=model_config, T_max=T_max)
     best_model.freeze_vqvae()
     best_model.eval()
 
     with torch.no_grad():
-        print(f"========== Validation 데이터 평가 시작 ==========")
-        # validation 데이터로 평가
-        _, _, val_metric = run_inference(best_model, valid_loader, config)
+        print("========== Validation 데이터 평가 시작 ==========")
+        _, _, val_metric = run_inference(best_model, valid_loader, model_config)
         print(f"Validation RIC: {val_metric['RankIC']:.4f}")
-        
-        print(f"========== Test 데이터 평가 시작 ==========")
-        # test 데이터로 평가
-        pred_df, _, metric = run_inference(best_model, test_loader, config)
+
+        print("========== Test 데이터 평가 시작 ==========")
+        pred_df, _, metric = run_inference(best_model, test_loader, model_config)
         print(f"Test RIC: {metric['RankIC']:.4f}")
-    
-    # Create directory for this run : without seed - extract everything after the first underscore
+
     save_run_name = '_'.join(run_name.split('_')[1:])
-    run_dir = os.path.join(get_root_dir(), config['train']['save_res'], save_run_name)
-    os.makedirs(run_dir, exist_ok=True)
-    
-    # Use seed for file names
-    seed = config['train']['seed']
-    output_path = os.path.join(run_dir, f"{seed}_best.pkl")
+    run_dir = Path(get_root_dir()) / cfg.train.save_res / save_run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    seed = cfg.train.seed
+    output_path = run_dir / f"{seed}_best.pkl"
     pred_df.to_pickle(output_path)
-    
-    # Also save as CSV for easy viewing
-    output_csv_path = os.path.join(run_dir, f"{seed}_metric.csv")
-    # metric은 딕셔너리이므로 DataFrame으로 변환 후 저장
+
+    output_csv_path = run_dir / f"{seed}_metric.csv"
     pd.DataFrame([metric], index=['values']).transpose().to_csv(output_csv_path)
     print(f"Results saved to {output_path} and {output_csv_path}")
 
     log_metrics_as_bar_chart(metric, model_name=run_name)
     wandb.log({'metrics_best': metric})
-    
-    # for RIC
-    # best_checkpoint_path_for_ric = checkpoint_callback_for_ric.best_model_path
-    # print(f"************ Best checkpoint path for RIC: {best_checkpoint_path_for_ric} ************")
-    # print(f"************ Best validation RIC: {checkpoint_callback_for_ric.best_model_score} ************")
-    
-    # best_model_for_ric = GenerateReturn.load_from_checkpoint(best_checkpoint_path_for_ric, config=config, T_max=T_max)
-    # with torch.no_grad():
-    #     print(f"************ Test 데이터 평가 시작 ************")
-    #     # validation 데이터로 평가
-    #     test_pred_df, _, test_metric = run_inference(best_model_for_ric, test_loader, config)
-    #     print(f"Test RIC for V-RIC: {test_metric['RankIC']:.4f}")
-    
-    # output_path = os.path.join(get_root_dir(), config['train']['save_res'], f"{run_name}_best_ric.pkl")
-    # test_pred_df.to_pickle(output_path)
 
-    # log_metrics_as_bar_chart(test_metric, model_name=run_name)
-    # wandb.log({'metrics_best_ric': test_metric})
+    experiment = getattr(wandb_logger, 'experiment', None)
+    if experiment is not None:
+        experiment.finish()
 
-    wandb.finish()
-
-    return metric['RankIC']
+    return metric
 
 
-def main(config, wandb_run=None):
-    # * Set seed
-    seed_everything(config['train']['seed'])
-    pl.seed_everything(config['train']['seed'], workers=True)
+@hydra.main(version_base="1.3", config_path="configs", config_name="config")
+def main(cfg: DictConfig) -> float:
+    hydra_cfg = HydraConfig.get()
+    overrides = list(hydra_cfg.overrides.task or [])
 
-    # * Set qlib
-    if config['data']['universe'] == 'csi300':  
-        region_code = 'CN'
-        universe_prefix = 'csi300'
-    elif config['data']['universe'] == 'sp500':
-        region_code = 'US'
-        universe_prefix = 'sp500'
-    elif config['data']['universe'] == 'csi500':
-        region_code = 'CN'
-        universe_prefix = 'csi500'
+    global _ORIGINAL_CWD
+    if _ORIGINAL_CWD is None:
+        _ORIGINAL_CWD = Path(hydra_cfg.runtime.cwd)
+
+    if hydra_cfg.mode == RunMode.MULTIRUN:
+        base_cfg = _compose_frozen_config(overrides)
     else:
-        raise ValueError(f"Invalid universe: {config['data']['universe']}")
-    region = get_region(region_code)
-    
-    # * Load dataset
-    print(f"Seed value: {config['train']['seed']}")
+        base_cfg = cfg
+
+    frozen_cfg = OmegaConf.create(OmegaConf.to_container(base_cfg, resolve=True))
+    OmegaConf.set_readonly(frozen_cfg, True)
+
+    config_dict = OmegaConf.to_container(frozen_cfg, resolve=True)
+
+    seed_everything(frozen_cfg.train.seed)
+    pl.seed_everything(frozen_cfg.train.seed, workers=True)
+
+    region_code, universe_prefix = _resolve_universe(frozen_cfg.data.universe)
+
+    print(f"Seed value: {frozen_cfg.train.seed}")
     print(f"********** Region: {region_code} **********")
-    print(f"********** Universe: {config['data']['universe']} **********")
-    
-    ###### Load dataset ######
-    pickle_path = config['data'].get('data_path')
-    
-    if pickle_path and os.path.exists(pickle_path):
-        print(f"========== Loading data from pickle: {pickle_path} ==========")
-        
-        train_pickle_path = f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{config['vqvae']['predictor']['pred_len']}_dl_train.pkl"
-        valid_pickle_path = f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{config['vqvae']['predictor']['pred_len']}_dl_valid.pkl"
-        test_pickle_path = f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{config['vqvae']['predictor']['pred_len']}_dl_test.pkl"
+    print(f"********** Universe: {frozen_cfg.data.universe} **********")
 
-        required_files = [train_pickle_path, valid_pickle_path, test_pickle_path]
-        if not all(os.path.exists(p) for p in required_files):
-            missing_files = [p for p in required_files if not os.path.exists(p)]
-            raise FileNotFoundError(f"Missing required pickle files: {', '.join(missing_files)}. Please ensure data is pre-processed.")
+    train_loader, valid_loader, test_loader, num_batches_per_epoch_train = _prepare_dataloaders(
+        frozen_cfg, region_code, universe_prefix
+    )
 
-        train_prepare = pickle.load(open(train_pickle_path, 'rb'))
-        valid_prepare = pickle.load(open(valid_pickle_path, 'rb'))
-        test_prepare = pickle.load(open(test_pickle_path, 'rb'))
-    
-    else:
-        raise FileNotFoundError(f"Data path '{pickle_path}' not found or not specified in config. This script requires pre-processed pickle data.")
-
-    num_workers = config['train']['num_workers']
-    train_loader, num_batches_per_epoch_train = init_data_loader(train_prepare, shuffle=True, num_workers=num_workers)
-    valid_loader, num_batches_per_epoch_valid = init_data_loader(valid_prepare, shuffle=False, num_workers=num_workers)
-    test_loader, num_batches_per_epoch_test = init_data_loader(test_prepare, shuffle=False, num_workers=num_workers)
-    
-    # train 함수의 반환값을 받아서 전달해야 함
-    ric_score = train(config, train_loader, valid_loader, num_batches_per_epoch_train, test_loader, wandb_run=wandb_run)
+    ric_score = train(frozen_cfg, config_dict, train_loader, valid_loader, num_batches_per_epoch_train, test_loader)
     return ric_score
 
+
 if __name__ == "__main__":
-    args = load_args()
-    config = load_yaml_param_settings(args.config, args.seed)
-    metric = main(config)
-    print(metric)
+    score = main()
+    print(score)

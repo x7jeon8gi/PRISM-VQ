@@ -1,95 +1,140 @@
-import torch
-import wandb
-import pandas as pd
-import logging
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, EarlyStopping
-from pytorch_lightning.loggers import WandbLogger
-from qlib.data.dataset import TSDatasetH, DataHandlerLP
-from trainer.train_vqvae import FactorVQVAE
-import os
-from utils import load_yaml_param_settings, load_args, get_root_dir, save_model, seed_everything
-from dataset.dataset import init_data_loader
-from utils.logger import set_logger
-from qlib.constant import REG_CN, REG_US
-import qlib
-from qlib.contrib.data.handler import Alpha158
-from qlib.data import D
+from pathlib import Path
+from typing import List, Optional
+
+import hydra
 import pickle
+import pytorch_lightning as pl
+import qlib
+import torch
+from hydra.utils import instantiate, to_absolute_path
+from omegaconf import DictConfig, OmegaConf
+from pytorch_lightning.callbacks import Callback
+from pytorch_lightning.loggers import WandbLogger
+from qlib.constant import REG_CN, REG_US
+from qlib.contrib.data.handler import Alpha158
+from qlib.data.dataset import DataHandlerLP, TSDatasetH
+
+from dataset.dataset import init_data_loader
+from trainer.train_vqvae import FactorVQVAE
+from utils import get_root_dir, load_yaml_param_settings, seed_everything
+from utils.wandb import make_wandb_config
+
 torch.set_float32_matmul_precision('high')
 
-args = load_args()
-config = load_yaml_param_settings(args.config)
+# OmegaConf resolver 등록 - n_expert의 절반을 계산하는 함수
+OmegaConf.register_new_resolver("half", lambda x: int(x) // 2)
 
-config['train']['seed'] = 42
-config['train']['num_epochs'] = 50
-config['train']['early_stopping']['patience'] = 20
-config['train']['learning_rate'] = 0.0001
-config['train']['gradient_clip_val'] = 5
+def _build_run_name(cfg: DictConfig) -> str:
+    if cfg.train.run_name != "auto":
+        return cfg.train.run_name
 
-def train(config, train_loader, valid_loader, num_batches_per_epoch_train, num_batches_per_epoch_valid):
+    hidden_size = cfg.vqvae.hidden_size
+    num_embed = cfg.vqvae.num_embed
+    hidden_channels = cfg.vqvae.decoder.hidden_channels
+    vq_embed_dim = cfg.vqvae.vq_embed_dim
+    distance = cfg.vqvae.quantizer.distance
+    pred_len = cfg.vqvae.predictor.pred_len
+    seed = 42  # stage1.py는 항상 seed 42로 고정
+    universe = cfg.data.universe
 
-    hidden_size = config['vqvae']['hidden_size']
-    num_embed = config['vqvae']['num_embed'] # ?코드북 크기
-    decay = config['vqvae']['quantizer']['decay']
-    project_name = config['train']['project_name']
-    hidden_channels = config['vqvae']['decoder']['hidden_channels']
-    seq_len = config['vqvae']['seq_len']
-    vq_embed_dim = config['vqvae']['vq_embed_dim']
-    distance = config['vqvae']['quantizer']['distance']
-    pred_len = config['vqvae']['predictor']['pred_len']
-    seed = config['train']['seed']
-    universe = config['data']['universe']
+    return (
+        f"infu{universe}_h{hidden_size}_VQK{num_embed}_C{hidden_channels}_"
+        f"emb{vq_embed_dim}_d{distance}p{pred_len}_s{seed}"
+    )
 
-    if config['train']['run_name'] == "auto":
-        run_name = f'aaai{universe}_h{hidden_size}_VQK{num_embed}_C{hidden_channels}_emb{vq_embed_dim}_d{distance}p{pred_len}_s{seed}'
-    else:
-        run_name = config['train']['run_name']
+def _build_callbacks(cfg: DictConfig, run_name: str) -> List[Callback]:
+    checkpoint_dir = Path(get_root_dir()) / cfg.train.save_dir
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    #* Init model
-    T_max = num_batches_per_epoch_train * config['train']['num_epochs']
-    model = FactorVQVAE(config, T_max)
+    early_cfg = cfg.train.early_stopping
+    callbacks_cfg = [
+        {
+            "_target_": "pytorch_lightning.callbacks.LearningRateMonitor",
+            "logging_interval": "step",
+        },
+        {
+            "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
+            "save_top_k": 1,
+            "monitor": early_cfg.monitor,
+            "mode": early_cfg.mode,
+            "dirpath": str(checkpoint_dir),
+            "filename": f"{run_name}" + "-{epoch}-{val_loss:.4f}",
+        },
+        {
+            "_target_": "pytorch_lightning.callbacks.EarlyStopping",
+            "monitor": early_cfg.monitor,
+            "min_delta": early_cfg.min_delta,
+            "patience": early_cfg.patience,
+            "verbose": early_cfg.verbose,
+            "mode": early_cfg.mode,
+        },
+    ]
 
-    #* Init logger
-    wandb.init(project=project_name, name=run_name, config=config, group=universe, entity="x7jeon8gi")
-    wandb_logger = WandbLogger(project=project_name, name=run_name, config=config)
+    return [instantiate(cb_cfg) for cb_cfg in callbacks_cfg]
+
+def _build_wandb_logger(cfg: DictConfig, run_name: str) -> WandbLogger:
+    # config는 나중에 수동으로 업데이트할 거임
+    logger_cfg = {
+        "_target_": "pytorch_lightning.loggers.wandb.WandbLogger",
+        "project": cfg.train.project_name,
+        "name": run_name,
+        "group": cfg.data.universe,
+        "entity": cfg.train.get("wandb_entity"),
+        "save_dir": str(Path(get_root_dir()) / cfg.train.save_dir),
+        "log_model": cfg.train.get("wandb_log_model", False),
+        "reinit": True,
+    }
+
+    logger_cfg = {k: v for k, v in logger_cfg.items() if v is not None}
+    logger = instantiate(logger_cfg)
+    
+    # wandb가 초기화된 후에 config 업데이트
+    try:
+        clean_config = make_wandb_config(cfg)
+        if hasattr(logger, 'experiment') and clean_config:
+            logger.experiment.config.update(clean_config)
+    except Exception:
+        print("config 업데이트 실패")
+        pass  # config 업데이트 실패해도 상관없음
+    
+    return logger
+
+
+def train(cfg: DictConfig,
+          config_dict: dict,
+          train_loader,
+          valid_loader,
+          num_batches_per_epoch_train: int) -> None:
+    run_name = _build_run_name(cfg)
+
+    T_max = num_batches_per_epoch_train * cfg.train.num_epochs
+    model = FactorVQVAE(config_dict, T_max)
+
+    wandb_logger = _build_wandb_logger(cfg, run_name)
     wandb_logger.watch(model, log='all')
+    callbacks = _build_callbacks(cfg, run_name)
 
-    checkpoint_callback = ModelCheckpoint(
-        save_top_k=1,
-        monitor='val_loss',
-        mode='min',
-        dirpath=os.path.join(get_root_dir(), 'checkpoints'),
-        filename=f'{run_name}'+'-{epoch}-{val_loss:.4f}'
+    trainer = pl.Trainer(
+        logger=wandb_logger,
+        enable_checkpointing=True,
+        callbacks=callbacks,
+        max_epochs=cfg.train.num_epochs,
+        accelerator=cfg.train.get("accelerator", "gpu"),
+        devices=cfg.train.get("gpu_counts", 1),
+        precision=cfg.train.precision,
+        gradient_clip_val=cfg.train.get("gradient_clip_val", 5),
+        deterministic=True,
+        log_every_n_steps=cfg.train.get("log_every_n_steps", 50),
     )
-
-    early_stopping_config = config['train']['early_stopping']
-    early_stop_callback = EarlyStopping(
-        monitor=early_stopping_config['monitor'],
-        min_delta=early_stopping_config['min_delta'],
-        patience=early_stopping_config['patience'], 
-        verbose=early_stopping_config['verbose'],
-        mode=early_stopping_config['mode']
-    )
-
-    trainer = pl.Trainer(logger=wandb_logger,
-                         enable_checkpointing=True,
-                         callbacks=[LearningRateMonitor(logging_interval='step'), 
-                                   checkpoint_callback, 
-                                   early_stop_callback],
-                         max_epochs=config['train']['num_epochs'],
-                         accelerator='gpu',
-                         devices=1, 
-                         precision=config['train']['precision'],
-                         gradient_clip_val=config['train'].get('gradient_clip_val', 5),
-                         deterministic=True
-                         )
 
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
 
-    wandb.finish()
+    experiment = getattr(wandb_logger, "experiment", None)
+    if experiment is not None:
+        experiment.finish()
 
-def get_region(region_code):
+
+def get_region(region_code: str):
     """지역 코드에 따라 적절한 qlib 지역 상수를 반환합니다."""
     region_map = {
         'CN': REG_CN,
@@ -97,83 +142,89 @@ def get_region(region_code):
     }
     return region_map.get(region_code, REG_CN)  # 기본값은 REG_CN
 
-if __name__ == "__main__":
-    #* Load config
-    data_handler_config = load_yaml_param_settings(args.data_handler_config)
-    
-    # * Set seed
-    seed_everything(config['train']['seed'])
-    pl.seed_everything(config['train']['seed'])
-    # # * Set logger
-    # logger = set_logger(config['train']['run_name'], os.path.join(get_root_dir(), 'logs'))
 
-    # * Set qlib
-    if config['data']['universe'] == 'csi300':  
+def _load_data_handler_config(cfg: DictConfig) -> dict:
+    default_path = Path(get_root_dir()) / "configs" / "data_handler_config.yaml"
+    cfg_path = cfg.data.get("handler_config_path", str(default_path))
+    abs_path = to_absolute_path(str(cfg_path))
+    config = load_yaml_param_settings(abs_path)
+    return config or {}
+
+
+def _resolve_data_path(path: Optional[str]) -> Optional[Path]:
+    if not path:
+        return None
+    return Path(to_absolute_path(path))
+
+
+def _prepare_dataset(cfg: DictConfig,
+                     region_code: str,
+                     universe_prefix: str,
+                     data_handler_config: dict):
+    data_path = _resolve_data_path(cfg.data.get('data_path'))
+    pred_horizon = cfg.vqvae.predictor.pred_len
+    window_size = cfg.data.window_size
+
+    if not data_path:
+        raise ValueError("data_path가 설정되지 않았습니다. config.yaml에서 data.data_path를 설정해주세요.")
+    
+    expected_files = {
+        'train': data_path / region_code / f"{universe_prefix}_{window_size}_h{pred_horizon}_dl2_train.pkl",
+        'valid': data_path / region_code / f"{universe_prefix}_{window_size}_h{pred_horizon}_dl2_valid.pkl",
+    }
+    
+    missing = [str(p) for p in expected_files.values() if not p.exists()]
+    if missing:
+        raise FileNotFoundError(f"필요한 pickle 파일들이 존재하지 않습니다: {', '.join(missing)}")
+    
+    print(f"========== Loading data from pickle: {data_path} ==========")
+    train_prepare = pickle.load(open(expected_files['train'], 'rb'))
+    valid_prepare = pickle.load(open(expected_files['valid'], 'rb'))
+    return train_prepare, valid_prepare
+
+
+@hydra.main(version_base="1.3", config_path="configs", config_name="config")
+def main(cfg: DictConfig) -> None:
+    # 실행 시점의 config를 메모리에 고정하여 실행 중 변경에 영향받지 않게 함
+    frozen_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    OmegaConf.set_readonly(frozen_cfg, True)
+    
+    config_dict = OmegaConf.to_container(frozen_cfg, resolve=True)
+    data_handler_config = _load_data_handler_config(frozen_cfg)
+
+    # stage1.py는 항상 seed 42로 고정
+    fixed_seed = 42
+    seed_everything(fixed_seed)
+    pl.seed_everything(fixed_seed, workers=True)
+
+    universe = frozen_cfg.data.universe
+    if universe == 'csi300':
         region_code = 'CN'
         universe_prefix = 'csi300'
-    elif config['data']['universe'] == 'csi500':
+    elif universe == 'csi500':
         region_code = 'CN'
         universe_prefix = 'csi500'
-    elif config['data']['universe'] == 'sp500':
+    elif universe == 'sp500':
         region_code = 'US'
         universe_prefix = 'sp500'
-    elif config['data']['universe'] == 'nasdaq':
+    elif universe == 'nasdaq':
         region_code = 'US'
         universe_prefix = 'nasdaq'
     else:
-        raise ValueError(f"Invalid universe: {config['data']['universe']}")
-    region = get_region(region_code)
-    
-    # * Load dataset
-    print(f"Seed value: {config['train']['seed']}")
+        raise ValueError(f"Invalid universe: {universe}")
+
+    print(f"Seed value: {fixed_seed}")
     print(f"Region: {region_code}")
-    print(f"Universe: {config['data']['universe']}")
-    
-    ###### Load dataset ######
-    if universe_prefix != 'nasdaq':
-        # 피클 파일이 존재하면 로드하고, 없으면 Alpha158 사용
-        pickle_path = config['data'].get('data_path')
-        pred_horizon = config['vqvae']['predictor']['pred_len']
-        if pickle_path and os.path.exists(pickle_path):
-            print(f"========== Loading data from pickle: {pickle_path} ==========")
-            train_prepare = pickle.load(open(f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{pred_horizon}_dl_train.pkl", 'rb'))
-            valid_prepare = pickle.load(open(f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{pred_horizon}_dl_valid.pkl", 'rb'))
-            test_prepare = pickle.load(open(f"{pickle_path}/{region_code}/{universe_prefix}_{config['data']['window_size']}_h{pred_horizon}_dl_test.pkl", 'rb'))
-        
-        else:
-            print(f"Using Alpha158 handler with qlib data")
-            qlib.init(provider_uri=config['data'].get('provider_uri', "./qlib_data/cn_data"), region=region)
-            dataset = Alpha158(**data_handler_config)
+    print(f"Universe: {universe}")
 
-            segments = {
-                'train': config['data']['train_period'],
-                'valid': config['data']['valid_period'],
-                'test': config['data']['test_period'],
-            }
+    train_prepare, valid_prepare = _prepare_dataset(frozen_cfg, region_code, universe_prefix, data_handler_config)
 
-            TsDataset = TSDatasetH(
-                handler=dataset, 
-                segments=segments, 
-                step_len=config['data']['window_size'], 
-            )
-
-            train_prepare = TsDataset.prepare(segments='train', data_key=DataHandlerLP.DK_L)
-            valid_prepare = TsDataset.prepare(segments='valid', data_key=DataHandlerLP.DK_L)
-            test_prepare = TsDataset.prepare(segments='test', data_key=DataHandlerLP.DK_I)
-            train_prepare.config(fillna_type='ffill+bfill')
-            valid_prepare.config(fillna_type='ffill+bfill')
-            test_prepare.config(fillna_type='ffill+bfill')
-    else:
-        dataset = pickle.load(open(f"{config['data']['data_path']}/{region_code}/{universe_prefix}_data.pkl", 'rb'))
-        train_prepare = dataset.prepare(segments='train', data_key=DataHandlerLP.DK_L)
-        valid_prepare = dataset.prepare(segments='valid', data_key=DataHandlerLP.DK_L)
-        test_prepare = dataset.prepare(segments='test', data_key=DataHandlerLP.DK_I)
-        train_prepare.config(fillna_type='ffill+bfill')
-        valid_prepare.config(fillna_type='ffill+bfill')
-        test_prepare.config(fillna_type='ffill+bfill')
-        
-    num_workers = config['train']['num_workers']
+    num_workers = frozen_cfg.train.num_workers
     train_loader, num_batches_per_epoch_train = init_data_loader(train_prepare, shuffle=True, num_workers=num_workers)
-    valid_loader, num_batches_per_epoch_valid = init_data_loader(valid_prepare, shuffle=False, num_workers=num_workers)
+    valid_loader, _ = init_data_loader(valid_prepare, shuffle=False, num_workers=num_workers)
 
-    train(config, train_loader, valid_loader, num_batches_per_epoch_train, num_batches_per_epoch_valid)
+    train(frozen_cfg, config_dict, train_loader, valid_loader, num_batches_per_epoch_train)
+
+
+if __name__ == "__main__":
+    main()

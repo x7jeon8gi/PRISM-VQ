@@ -68,7 +68,8 @@ class FiLM1D(nn.Module):
         """
         # cond 가 2-D 가 아니면 마지막 dim 만 남기고 평균
         if cond.dim() > 2:
-            cond = cond.mean(dim=list(range(cond.dim() - 1)))
+            dims = tuple(range(1, cond.dim() - 1))
+            cond = cond.mean(dim=dims)
         gamma, beta = self.to_gb(cond).chunk(2, dim=-1)      # (N, C)
         gamma = gamma.unsqueeze(-1)
         beta  = beta .unsqueeze(-1)
@@ -132,6 +133,7 @@ class ReconstructionDecoder(nn.Module):
         self.conv_rest_layers   = nn.ModuleList()
         self.norm_rest_layers   = nn.ModuleList()  # rest 후 정규화
         self.film_layers        = nn.ModuleList()
+        self.skip_layers        = nn.ModuleList()
 
         for _ in range(self.K):
             # Conv expand: H → 2H
@@ -152,11 +154,17 @@ class ReconstructionDecoder(nn.Module):
             # FiLM conditioning
             self.film_layers.append(FiLM1D(prior_factor_dim, hidden_channels))
 
+            # Skip connection: upsample previous resolution to match current output
+            self.skip_layers.append(
+                nn.ConvTranspose1d(hidden_channels, hidden_channels,
+                                   kernel_size=4, stride=2, padding=1)
+            )
+
         # ── 3. Output projection ──
         self.conv_out = nn.Conv1d(hidden_channels, output_C, kernel_size=1)
         
-        # z_prior 정규화 (한 번만 적용)
-        self.z_prior_norm = nn.LayerNorm(prior_factor_dim)
+        # # z_prior 정규화 (한 번만 적용) -> autoencoder에서 이미 정규화 해줌.
+        # self.z_prior_norm = nn.LayerNorm(prior_factor_dim)
 
     def _make_norm_layer(self, num_channels: int) -> nn.Module:
         """정규화 레이어 생성 헬퍼 함수"""
@@ -183,9 +191,11 @@ class ReconstructionDecoder(nn.Module):
         
         # Base embedding: (B, latent_dim) → (B, H, T0)
         x = self.fc_in(z_q).view(B, self.H, self.T0)
-        
+
         # Upsample blocks
         for k in range(self.K):
+            residual = x
+
             # 1. Conv expand + Norm + GELU: (B, H, T) → (B, 2H, T)
             x = self.conv_expand_layers[k](x)
             x = self.norm_expand_layers[k](x)
@@ -201,6 +211,10 @@ class ReconstructionDecoder(nn.Module):
             
             # 4. FiLM conditioning: (B, H, 2T) → (B, H, 2T)
             x = self.film_layers[k](x, z_prior)
+
+            # 5. Residual skip: bring previous-resolution features forward
+            skip = self.skip_layers[k](residual)
+            x = x + skip
 
         # Output projection: (B, H, final_T) → (B, output_C, final_T) → (B, final_T, output_C)
         x_rec_permuted = self.conv_out(x)
