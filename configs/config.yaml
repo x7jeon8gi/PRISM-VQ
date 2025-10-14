@@ -4,7 +4,7 @@ vqvae:
   hidden_size: 128     # hidden dimension (내부)
   num_prior_factors: 13  # -> vq_embed_dim 과 합 45 / 77
   vq_embed_dim: 128    # element 수로 해석가능함.
-  num_embed: 128       #!!!!!! 코드북 갯수
+  num_embed: 512       #!!!!!! 코드북 갯수
   # encoder 파라미터
   encoder:
     num_heads: 2 
@@ -33,7 +33,7 @@ vqvae:
     pred_weight: 0.0001
 
 data:
-  universe: 'sp500' #!!! !!!!!!!!!!!!!!!!!
+  universe: 'csi300' #!!! !!!!!!!!!!!!!!!!! sp500 or csi300
   data_path: 'dataset/data'
   window_size: 20
   step: 1
@@ -41,17 +41,16 @@ data:
   valid_period : ["2020-01-01", "2021-12-31"] # 2년
   test_period  : ["2022-01-01", "2024-12-31"] # 3년
 
-# "sp500_h128_VQK128_C128_emb128_dl2p10_s42-epoch=28-val_loss=0.7589.ckpt"
-# sp500_h128_VQK256_C128_emb128_dl2p10_s42-epoch=41-val_loss=0.7805.ckpt
+# csi300_h128_VQK512_C128_emb128_dl2p10_s42-epoch=8-val_loss=0.5882.ckpt
 # sp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=28-val_loss=0.7354.ckpt
 predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_heads(n), dropout(d)
-  saved_model: "sp500_h128_VQK128_C128_emb128_dl2p10_s42-epoch=28-val_loss=0.7589.ckpt"
+  saved_model: "sp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=28-val_loss=0.7354.ckpt"
   num_features: 158
   individual: False
-  aux_weight: 0.005  #* 중국 0.01 미국 0.001
+  aux_weight: 0.01  #! 중국 0.01 미국 0.001
   kernel_size: 3
   k: ${half:${predictor.n_expert}} # top-k 전문가 (n_expert의 절반)
-  n_expert: 4 # !   # number of expert
+  n_expert: 8   #* number of expert
   pred_len: 20  # for DLinear
   moe_hidden: 64 # gate and noise  --- 현재 여러 결과상 64가 제일 좋아보임. 
   dropout: 0.1
@@ -61,9 +60,9 @@ predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_hea
     pe_kind: 'rope' 
     num_heads: 4
     num_layers: 1
-    d_model: 32   # !  #* 32
-    dim_feedforward: 64 #* 64
-    dropout: 0.1 #?.
+    d_model: 64   #* 32
+    dim_feedforward: 128 #* 64
+    dropout: 0.1 
     batch_first: True
  
   rank : 0

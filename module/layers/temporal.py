@@ -200,7 +200,6 @@ class TemporalTransformerEncoder(nn.Module):
     def __init__(self, config_predictor):
         super().__init__()
         self.max_len = config_predictor['pred_len']+1
-        self.pe_kind = config_predictor['transformer'].get('pe_kind', 'rope')
         self.d_model = config_predictor['transformer']['d_model']
         self.num_heads = config_predictor['transformer']['num_heads']
         self.dim_feedforward = config_predictor['transformer']['dim_feedforward']
@@ -213,9 +212,6 @@ class TemporalTransformerEncoder(nn.Module):
         self.return_sequence = config_predictor['transformer'].get('return_sequence', True)
 
         self.rotary_pe = RotaryPE(self.d_model, self.max_len)
-
-        if self.pe_kind != 'rope':
-            raise ValueError(f"TemporalTransformerEncoder requires pe_kind='rope', got {self.pe_kind}")
 
         layer = RotaryTransformerEncoderLayer(
             self.d_model,
@@ -246,7 +242,7 @@ class TemporalTransformerEncoder(nn.Module):
             z_q = self.z_q_proj(z_q)
         # z_q를 CLS 토큰처럼 시퀀스 맨 앞에 추가
         x = torch.cat((z_q.unsqueeze(1), x), dim=1)  # (B, 1+T, D)
-        # x = self.normalization(x) # ! 일단 normalization을 꺼보자. 
+        # x = self.normalization(x) 
 
         # 2) Positional Encoding (RoPE handled inside attention)
         out = self.transformer(x)           # (B,T+1,D)
