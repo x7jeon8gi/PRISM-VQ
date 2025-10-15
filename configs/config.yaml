@@ -1,39 +1,39 @@
 vqvae:
   num_features: 158
   seq_len: 20 
-  hidden_size: 128     # hidden dimension (내부)
-  num_prior_factors: 13  # -> vq_embed_dim 과 합 45 / 77
-  vq_embed_dim: 128    # element 수로 해석가능함.
-  num_embed: 512       #!!!!!! 코드북 갯수
-  # encoder 파라미터
+  hidden_size: 128     
+  num_prior_factors: 13  
+  vq_embed_dim: 128   
+  num_embed: 512    
+
   encoder:
     num_heads: 2 
     num_layers: 1
-  # quantizer 파라미터
+
   quantizer:
     decay: 0.95
     commit_weight: 0.25
-    distance: 'l2' # 결과상 l2가 제일 좋은것 같음
+    distance: 'l2'
     anchor: 'probrandom'
     first_batch: False
     contras_loss: True
-  # Decoder 파라미터
+
   decoder:
-    norm_type: 'none'     # 'batch', 'group', 'layer', 'instance', 'none'
-    num_groups: 8         # GroupNorm 사용시 그룹 수
+    norm_type: 'none'     
+    num_groups: 8         
     hidden_channels: 128
     initial_T: 5
     ortho_loss_weight: 0.1
-  # Predictor 파라미터
+
   predictor:
     pred_len: 10 
     num_gru_layers: 1
-    dropout: 0.1 # 걍 건드리지마 
+    dropout: 0.1 
     output_dim: 1
     pred_weight: 0.0001
 
 data:
-  universe: 'csi300' #!!! !!!!!!!!!!!!!!!!! sp500 or csi300
+  universe: 'csi300' 
   data_path: 'dataset/data'
   window_size: 20
   step: 1
@@ -41,27 +41,23 @@ data:
   valid_period : ["2020-01-01", "2021-12-31"] # 2년
   test_period  : ["2022-01-01", "2024-12-31"] # 3년
 
-# csi300_h128_VQK512_C128_emb128_dl2p10_s42-epoch=8-val_loss=0.5882.ckpt
-# sp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=28-val_loss=0.7354.ckpt
-predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_heads(n), dropout(d)
+predictor:
   saved_model: "sp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=28-val_loss=0.7354.ckpt"
   num_features: 158
   individual: False
-  aux_weight: 0.01  #! 중국 0.01 미국 0.001
+  aux_weight: 0.01  
   kernel_size: 3
-  k: ${half:${predictor.n_expert}} # top-k 전문가 (n_expert의 절반)
-  n_expert: 8   #* number of expert
-  pred_len: 20  # for DLinear
-  moe_hidden: 64 # gate and noise  --- 현재 여러 결과상 64가 제일 좋아보임. 
+  k: ${half:${predictor.n_expert}} 
+  n_expert: 8   
+  pred_len: 20  
+  moe_hidden: 64 
   dropout: 0.1
 
   transformer:
-    arch_type: 'naive' # naive, rwkv, patch_tst, tssmixer, temporal_conv, hybrid
-    pe_kind: 'rope' 
     num_heads: 4
     num_layers: 1
-    d_model: 64   #* 32
-    dim_feedforward: 128 #* 64
+    d_model: 64   
+    dim_feedforward: 128
     dropout: 0.1 
     batch_first: True
  
@@ -71,10 +67,10 @@ predictor: #! 수정필요: num_embed(VQ), vq_embed_dim(e), distance(d), num_hea
   aux_imp: 3
   
 train:
-  seed: 0 # ! SEED EXPERIMENTS
+  seed: 0 # 
   device: "cuda"
-  batch_size: 300 #(대략?)
-  learning_rate: 0.0001 #?
+  batch_size: 300 
+  learning_rate: 0.0001 
   num_epochs: 70
   project_name: "INFU"
   run_name: "auto"
@@ -91,16 +87,3 @@ train:
     verbose: True
     mode: "min"
 
-
-
-
-
-## S&P500
-# aaaisp500_h128_VQK128_C128_emb128_dl2p10_s42-epoch=6-val_loss=0.6665.ckpt
-# aaaisp500_h128_VQK256_C128_emb128_dl2p10_s42-epoch=8-val_loss=0.6506.ckpt
-# aaaisp500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=15-val_loss=0.6465.ckpt
-
-## CSI300
-# aaaicsi500_h128_VQK512_C128_emb128_dl2p10_s42-epoch=22-val_loss=0.5147.ckpt
-# aaaicsi500_h128_VQK256_C128_emb128_dl2p10_s42-epoch=22-val_loss=0.5373.ckpt
-# aaaicsi500_h128_VQK128_C128_emb128_dl2p10_s42-epoch=14-val_loss=0.5190.ckpt

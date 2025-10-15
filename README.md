@@ -89,7 +89,7 @@ If you find this code useful in your research, please cite:
 ```bibtex
 @article{prism-vq2025,
   title={PRISM-VQ: Prior-Integrated Stock Market Factor Learning with Vector Quantization},
-  author={Your Name and Co-authors},
+  author={Kim, Namhyoung, Jae Wook Song},
   journal={IEEE Transactions on Knowledge and Data Engineering},
   year={2025},
   note={Under Review}
