@@ -1,6 +1,6 @@
-# PRISM-VQ: Prior-Integrated Stock Market Factor Learning with Vector Quantization
+# PRISM-VQ: Fusing Financial Priors and Vector-Quantized Latent Factors for Dynamic Cross-Sectional Stock Prediction
 
-This repository contains the implementation of PRISM-VQ, a unified dynamic factor model for stock return prediction.
+This repository contains the implementation of PRISM-VQ(PRior-Informed Stock Model with Vector Quantization), a unified dynamic factor model for stock return prediction.
 
 **Paper**: Submitted to IEEE Transactions on Knowledge and Data Engineering (TKDE)
 
@@ -88,7 +88,7 @@ If you find this code useful in your research, please cite:
 
 ```bibtex
 @article{prism-vq2025,
-  title={PRISM-VQ: Prior-Integrated Stock Market Factor Learning with Vector Quantization},
+  title={PRISM-VQ: Fusing Financial Priors and Vector-Quantized Latent Factors for Dynamic Cross-Sectional Stock Prediction},
   author={Kim, Namhyoung, Jae Wook Song},
   journal={IEEE Transactions on Knowledge and Data Engineering},
   year={2025},

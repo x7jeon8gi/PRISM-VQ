@@ -128,7 +128,7 @@ def collect_sensitivity_data(res_dir: str, market: str) -> List[Dict]:
         # Read RankIC from all cross-validation folds
         rank_ics = []
 
-        for i in range(5):  # 5-fold cross-validation
+        for i in range(5):  # 5 seeds cross-validation
             metric_file = os.path.join(dir_path, f'{i}_metric.csv')
             if os.path.exists(metric_file):
                 rank_ic = read_rank_ic(metric_file)
@@ -248,6 +248,10 @@ def plot_3d_subplot(ax, x_values, y_values, z_values, xlabel, ylabel, zlabel, ti
     scatter = ax.scatter(x_values, y_values, z_values, c=z_values,
                         cmap=cmap, s=120, alpha=0.9, edgecolors='darkblue',
                         linewidths=0.8, vmin=vmin, vmax=vmax)
+
+    # Add value labels to each point (small font)
+    for i, (x, y, z) in enumerate(zip(x_values, y_values, z_values)):
+        ax.text(x, y, z, f'{z:.4f}', fontsize=7, ha='center', va='bottom')
 
     # Try to create surface interpolation if we have enough points
     if len(x_values) >= 4:
