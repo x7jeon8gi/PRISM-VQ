@@ -89,30 +89,11 @@ PRISM-VQ/
 │   ├── 📄 quantise.py
 │   └── 📂 layers/
 ├── 📂 trainer/           # Training scripts
-├── 📂 benchmarks/        # Evaluation and analysis scripts
+├── 📂 utils/             # Utility functions
 ├── 🚀 stage1.py          # Stage 1 training entry point
-├── 🚀 stage2.py          # Stage 2 training entry point
-└── 📂 utils/             # Utility functions
+└── 🚀 stage2.py          # Stage 2 training entry point
 ```
 
-## 📚 Citation
-
-If you find this code useful in your research, please cite:
-
-```bibtex
-@article{prism-vq2025,
-  title={PRISM-VQ: Fusing Financial Priors and Vector-Quantized Latent Factors for Dynamic Cross-Sectional Stock Prediction},
-  author={Kim, Namhyoung, Jae Wook Song},
-  journal={IEEE Transactions on Knowledge and Data Engineering},
-  year={2025},
-  note={Under Review}
-}
-```
-
-## 👥 Authors
-
-- **Namhyoung Kim** - [x7jeon8gi@hanyang.ac.kr](mailto:x7jeon8gi@hanyang.ac.kr)
-- **Jae Wook Song** - [jwsong@hanyang.ac.kr](mailto:jwsong@hanyang.ac.kr)
 
 ## 📄 License
 
